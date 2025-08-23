@@ -10,7 +10,7 @@ use crate::{
 
 #[derive(Debug)]
 enum MainSelection {
-    Solve,
+    New,
     Load,
     Exit,
 }
@@ -19,25 +19,26 @@ impl Display for MainSelection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
             MainSelection::Load => write!(f, "Load"),
-            MainSelection::Solve => write!(f, "Solve"),
+            MainSelection::New => write!(f, "New"),
             MainSelection::Exit => write!(f, "Exit"),
         }
     }
 }
 
 #[derive(Debug)]
-enum UserResponse {
-    Answer(Position, u8),
+enum UserRequest {
+    Guess(Position, u8),
     Undo,
     Redo,
     Reset,
     HardReset,
     Giveup,
     Hint(Position),
+    Highlight(u8),
     Exit,
 }
 
-impl UserResponse {
+impl UserRequest {
     pub fn parse(ui: &str) -> Result<Self, Box<dyn Error>> {
         let ui = ui.to_lowercase();
 
@@ -81,7 +82,7 @@ impl UserResponse {
                     );
                 }
 
-                return Ok(Self::Answer(Position::new(x, y), val));
+                return Ok(Self::Guess(Position::new(x, y), val));
             }
             'h' => {
                 if chars.len() - 1 != 2 {
@@ -108,6 +109,20 @@ impl UserResponse {
 
                 return Ok(Self::Hint(Position::new(x, y)));
             }
+            'i' => {
+                if chars.len() - 1 != 1 {
+                    return Err("invalid highlight requested, please try again".into());
+                }
+
+                let val = match chars[1].to_digit(10) {
+                    Some(v) => v as u8,
+                    None => {
+                        return Err("expected a digit between 1 and 9 inclusive but found something else (value digit)".into());
+                    }
+                };
+
+                return Ok(Self::Highlight(val));
+            }
             'u' => return Ok(Self::Undo),
             'r' => return Ok(Self::Redo),
             'y' => return Ok(Self::Reset),
@@ -123,11 +138,8 @@ impl UserResponse {
 
 pub fn start_game() {
     loop {
-        let main_selection_options = vec![
-            MainSelection::Solve,
-            MainSelection::Load,
-            MainSelection::Exit,
-        ];
+        let main_selection_options =
+            vec![MainSelection::New, MainSelection::Load, MainSelection::Exit];
 
         let main_selection = prompt_select(
             "Select one of the following options",
@@ -156,7 +168,7 @@ pub fn start_game() {
 
                 game_loop(&mut board);
             }
-            MainSelection::Solve => {
+            MainSelection::New => {
                 let clues = prompt("How many clues do you want in the puzzle?", "40");
 
                 let clues = match clues.parse::<u8>() {
@@ -215,16 +227,16 @@ fn game_loop(board: &mut Sudoku) {
             "",
         );
 
-        let v = match UserResponse::parse(&ans) {
+        let v = match UserRequest::parse(&ans) {
             Ok(v) => v,
             Err(e) => {
-                message = format!("Error: {}", e.to_string());
+                message = format!("Error parsing your request: {}", e.to_string());
                 continue;
             }
         };
 
         match v {
-            UserResponse::Answer(pos, val) => {
+            UserRequest::Guess(pos, val) => {
                 match board.insert_at(&pos, Some(val)) {
                     InsertStatus::Wrong => number_of_mistakes += 1,
                     InsertStatus::ValuePresent =>
@@ -235,7 +247,7 @@ fn game_loop(board: &mut Sudoku) {
 
                 undo_list.push((pos.clone(), Some(val)));
             }
-            UserResponse::Undo => {
+            UserRequest::Undo => {
                 if undo_list.is_empty() {
                     message =
                         "You can't use the undo option as there is no known previous move".into();
@@ -247,7 +259,7 @@ fn game_loop(board: &mut Sudoku) {
                 board.insert_at(&pp.0, None);
                 redo_list.push(pp);
             }
-            UserResponse::Redo => {
+            UserRequest::Redo => {
                 if redo_list.is_empty() {
                     message = "You can't use the redo option as there is nothing undid yet".into();
                     continue;
@@ -258,7 +270,7 @@ fn game_loop(board: &mut Sudoku) {
                 board.insert_at(&pp.0, pp.1);
                 undo_list.push(pp);
             }
-            UserResponse::Hint(pos) => {
+            UserRequest::Hint(pos) => {
                 match board.hint(&pos) {
                     HintStatus::ValuePresent => {
                         message = "Hint requested on already filled cell".into()
@@ -267,22 +279,25 @@ fn game_loop(board: &mut Sudoku) {
                 }
                 continue;
             }
-            UserResponse::Reset => {
+            UserRequest::Highlight(v) => {
+                board.highlight(v);
+            }
+            UserRequest::Reset => {
                 board.reset();
                 undo_list.clear();
                 redo_list.clear();
             }
-            UserResponse::HardReset => {
+            UserRequest::HardReset => {
                 board.hard_reset();
                 undo_list.clear();
                 redo_list.clear();
             }
-            UserResponse::Giveup => {
+            UserRequest::Giveup => {
                 board.reset();
                 board.solve(None);
                 give_up = true;
             }
-            UserResponse::Exit => {
+            UserRequest::Exit => {
                 exit(1);
             }
         }

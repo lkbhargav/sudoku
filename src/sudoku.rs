@@ -9,7 +9,7 @@ use std::{
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 enum CellState {
-    Empty,
+    Normal,
     UserMarkedDefault,
     Wrong,
     Hinted,
@@ -87,6 +87,7 @@ pub struct Sudoku {
     grid: Board,
     prefilled_positions: HashMap<Position, u8>,
     solved_grid: Board,
+    highlighted: Option<u8>,
 }
 
 impl Display for Sudoku {
@@ -109,15 +110,27 @@ impl Display for Sudoku {
                             .prefilled_positions
                             .contains_key(&Position::new(i.0, j.0))
                         {
-                            write!(f, " {} ", v.to_string().bold())
-                                .expect("error displaying board 4");
+                            let mut val = v.to_string().bold();
+                            if self.highlighted.is_some() {
+                                if j.1.0.unwrap() == self.highlighted.unwrap() {
+                                    val = v.to_string().on_bright_yellow().green().bold();
+                                }
+                            }
+
+                            write!(f, " {} ", val).expect("error displaying board 4");
                         } else {
-                            let val = match j.1.1 {
+                            let mut val = match j.1.1 {
                                 CellState::Hinted => v.to_string().magenta().bold(),
                                 CellState::Wrong => v.to_string().red().bold(),
                                 CellState::UserMarkedDefault => v.to_string().yellow().bold(),
                                 _ => v.to_string().green(),
                             };
+
+                            if self.highlighted.is_some() {
+                                if j.1.0.unwrap() == self.highlighted.unwrap() {
+                                    val = val.on_bright_yellow().green().bold();
+                                }
+                            }
 
                             write!(f, " {} ", val).expect("error displaying board 5");
                         }
@@ -160,7 +173,7 @@ impl Sudoku {
         let mut rng = rand::rng();
 
         'outer: loop {
-            let mut grid: Board = vec![vec![(None, CellState::Empty); 9]; 9];
+            let mut grid: Board = vec![vec![(None, CellState::Normal); 9]; 9];
 
             for i in 0..9 {
                 for j in 0..9 {
@@ -220,6 +233,7 @@ impl Sudoku {
                 grid: grid.clone(),
                 prefilled_positions,
                 solved_grid: grid,
+                highlighted: None,
             };
 
             if board.is_board_valid() && board.is_puzzle_valid() {
@@ -259,7 +273,7 @@ impl Sudoku {
             let mut v = sc.1.trim().to_string();
 
             if v.is_empty() {
-                list.push((None, CellState::Empty));
+                list.push((None, CellState::Normal));
                 continue;
             }
 
@@ -283,7 +297,7 @@ impl Sudoku {
             let val = v.parse::<u8>();
 
             if val.is_err() {
-                list.push((None, CellState::Empty));
+                list.push((None, CellState::Normal));
                 continue;
             }
 
@@ -302,7 +316,7 @@ impl Sudoku {
             if is_user_defined {
                 list.push((Some(val), CellState::UserMarkedDefault));
             } else {
-                list.push((Some(val), CellState::Empty));
+                list.push((Some(val), CellState::Normal));
             }
         }
 
@@ -312,6 +326,7 @@ impl Sudoku {
             grid: res.clone(),
             prefilled_positions,
             solved_grid: res,
+            highlighted: None,
         };
 
         if sudoku.is_board_valid() && sudoku.is_puzzle_valid() {
@@ -427,11 +442,11 @@ impl Sudoku {
     }
 
     fn insert(&mut self, pos: &Position, val: Option<u8>) {
-        self.grid[pos.x][pos.y] = (val, CellState::Empty);
+        self.grid[pos.x][pos.y] = (val, CellState::Normal);
     }
 
     pub fn insert_at(&mut self, pos: &Position, val: Option<u8>) -> InsertStatus {
-        let mut mv = (val, CellState::Empty);
+        let mut mv = (val, CellState::Normal);
 
         let mut resp = InsertStatus::Right;
 
@@ -459,6 +474,19 @@ impl Sudoku {
         self.grid[pos.x][pos.y] = (self.solved_grid[pos.x][pos.y].0, CellState::Hinted);
 
         HintStatus::Ok
+    }
+
+    pub fn highlight(&mut self, val: u8) {
+        match self.highlighted {
+            Some(v) => {
+                if v == val {
+                    self.highlighted = None;
+                } else {
+                    self.highlighted = Some(val);
+                }
+            }
+            None => self.highlighted = Some(val),
+        }
     }
 
     fn get(&self, pos: &Position) -> Option<u8> {
