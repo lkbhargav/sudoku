@@ -361,7 +361,8 @@ impl Sudoku {
             }
         }
 
-        resp
+        // removes the trailing comma and returns
+        resp.trim_end_matches(",").into()
     }
 
     pub fn is_board_solved_completely(&self) -> bool {
@@ -374,6 +375,10 @@ impl Sudoku {
         }
 
         true
+    }
+
+    pub fn number_of_initial_clues(&self) -> u8 {
+        self.prefilled_positions.len() as u8
     }
 
     /// board is valid if the number placements obey the row, column and block rules
@@ -476,16 +481,16 @@ impl Sudoku {
         HintStatus::Ok
     }
 
-    pub fn highlight(&mut self, val: u8) {
-        match self.highlighted {
-            Some(v) => {
-                if v == val {
-                    self.highlighted = None;
-                } else {
-                    self.highlighted = Some(val);
-                }
-            }
-            None => self.highlighted = Some(val),
+    pub fn highlight(&mut self, val: Option<u8>) {
+        if val.is_none() {
+            self.highlighted = None;
+            return;
+        }
+
+        if self.highlighted == val {
+            self.highlighted = None;
+        } else {
+            self.highlighted = val;
         }
     }
 

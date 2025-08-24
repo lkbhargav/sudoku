@@ -1,6 +1,11 @@
-use sudoko::game::start_game;
+use sudoko::game::game::Game;
 
 fn main() {
+    let mut g = Game::new();
+    g.start_game();
+}
+
+fn test() {
     // tough
     // let str_val = ",,,1,,2,,,,,6,,,,,,7,,,,8,,,,9,,,4,,,,,,,,3,,5,,,,7,,,,2,,,,8,,,,1,,,9,,,,8,,5,,7,,,,,,6,,,,,3,,4,,,";
 
@@ -24,6 +29,4 @@ fn main() {
     // println!("{sdk}");
 
     // println!("Is puzzle valid: {}", sdk.is_puzzle_valid());
-
-    start_game();
 }
