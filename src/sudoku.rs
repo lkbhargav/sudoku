@@ -136,7 +136,11 @@ impl Display for Sudoku {
 
                             if self.highlighted.is_some() {
                                 if j.1.0.unwrap() == self.highlighted.unwrap() {
-                                    val = val.on_bright_yellow().green().bold();
+                                    if j.1.1 == CellState::Wrong {
+                                        val = val.on_bright_yellow().red().bold();
+                                    } else {
+                                        val = val.on_bright_yellow().green().bold();
+                                    }
                                 }
                             }
 
@@ -581,6 +585,12 @@ impl Sudoku {
 
         if self.insert(pos, val, cell_state).is_err() {
             return InsertStatus::ValuePresent;
+        }
+
+        if self.highlighted.is_some() {
+            if self.highlighted != val {
+                self.highlight(val);
+            }
         }
 
         resp
