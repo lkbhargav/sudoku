@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-cli-clipboard = "0.4.0"
 colored = "3.0.0"
 dialoguer = "0.11.0"
 humantime = "2.2.0"
