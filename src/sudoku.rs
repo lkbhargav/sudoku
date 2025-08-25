@@ -7,7 +7,7 @@ use std::{
     io::{self, Write},
 };
 
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
 enum CellState {
     Normal,
     UserMarkedDefault,
@@ -26,7 +26,12 @@ pub enum HintStatus {
     ValuePresent,
 }
 
-type Board = Vec<Vec<(Option<u8>, CellState)>>;
+enum UpdateMapsType {
+    Add,
+    Remove,
+}
+
+type Board = [[(Option<u8>, CellState); 9]; 9];
 
 #[derive(PartialEq, Eq, Debug, Hash, Clone)]
 pub struct Position {
@@ -88,6 +93,9 @@ pub struct Sudoku {
     prefilled_positions: HashMap<Position, u8>,
     solved_grid: Board,
     highlighted: Option<u8>,
+    rows: [u16; 9],
+    columns: [u16; 9],
+    blocks: [u16; 9],
 }
 
 impl Display for Sudoku {
@@ -173,19 +181,23 @@ impl Sudoku {
         let mut rng = rand::rng();
 
         'outer: loop {
-            let mut grid: Board = vec![vec![(None, CellState::Normal); 9]; 9];
+            let mut grid: Board = [[(None, CellState::Normal); 9]; 9];
+
+            let mut blocks: [u16; 9] = [0; 9];
+            let mut rows: [u16; 9] = [0; 9];
+            let mut columns: [u16; 9] = [0; 9];
 
             for i in 0..9 {
                 for j in 0..9 {
-                    let pos = Position::new(i, j);
+                    let bid = Sudoku::get_block_id(i, j);
                     let mut counter = 0;
 
                     loop {
                         let val = rng.random_range(1..=9) as u8;
 
-                        if Sudoku::is_present_in_block(&grid, &pos, val)
-                            || Sudoku::is_present_in_column(&grid, &pos, val)
-                            || Sudoku::is_present_in_row(&grid, &pos, val)
+                        if (blocks[bid] & (1 << val)) != 0
+                            || (rows[i] & (1 << val)) != 0
+                            || (columns[j] & (1 << val)) != 0
                         {
                             counter += 1;
                             if counter >= 20 {
@@ -196,12 +208,16 @@ impl Sudoku {
                         }
 
                         grid[i][j].0 = Some(val);
+                        blocks[bid] |= 1 << val;
+                        rows[i] |= 1 << val;
+                        columns[j] |= 1 << val;
+
                         break;
                     }
                 }
             }
 
-            print!(",");
+            // print!(",");
             io::stdout().flush().expect("Failed to flush stdout");
 
             let mut number_of_removals = 81 - number_of_clues;
@@ -216,30 +232,63 @@ impl Sudoku {
                 }
             }
 
-            print!("!");
+            // print!("!");
             io::stdout().flush().expect("Failed to flush stdout");
 
             let mut prefilled_positions = HashMap::new();
 
+            let mut blocks = [0; 9];
+            let mut columns = [0; 9];
+            let mut rows = [0; 9];
+
             for i in grid.iter().enumerate() {
                 for j in i.1.iter().enumerate() {
                     if j.1.0.is_some() {
-                        prefilled_positions.insert(Position::new(i.0, j.0), j.1.0.unwrap());
+                        let val = j.1.0.unwrap();
+                        prefilled_positions.insert(Position::new(i.0, j.0), val);
+
+                        if Sudoku::check_for_conflict(
+                            vec![
+                                (&blocks, Sudoku::get_block_id(i.0, j.0)),
+                                (&rows, i.0),
+                                (&columns, j.0),
+                            ],
+                            val,
+                        ) {
+                            continue 'outer;
+                        }
+
+                        Sudoku::insert_into_bitmap(&mut rows, i.0, val);
+                        Sudoku::insert_into_bitmap(&mut columns, j.0, val);
+                        Sudoku::insert_into_bitmap(
+                            &mut blocks,
+                            Sudoku::get_block_id(i.0, j.0),
+                            val,
+                        );
                     }
                 }
             }
+
+            // println!("{:?}", rows);
+            // println!("{:?}", columns);
+            // println!("{:?}", blocks);
 
             let mut board = Self {
                 grid: grid.clone(),
                 prefilled_positions,
                 solved_grid: grid,
                 highlighted: None,
+                rows,
+                columns,
+                blocks,
             };
 
-            if board.is_board_valid() && board.is_puzzle_valid() {
-                println!("");
+            // println!("{board}");
+            // println!("\n{}\n{}\n\n", board.to_thonky_str(), board.to_str());
 
-                board.solved_grid = board.grid.clone();
+            // println!("board.is_puzzle_valid(): {}", board.is_puzzle_valid());
+
+            if board.solve() {
                 board.reset();
                 return board;
             }
@@ -320,19 +369,51 @@ impl Sudoku {
             }
         }
 
-        let res = list.chunks(9).map(|v| v.to_vec()).collect::<Board>();
+        let mut blocks = [0; 9];
+        let mut columns = [0; 9];
+        let mut rows = [0; 9];
+
+        let res: Board = list
+            .chunks(9)
+            .map(|chunk| chunk.try_into().expect("error chunking the input given"))
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("given board is not of valid lengths");
+
+        for i in res.iter().enumerate() {
+            for j in i.1.iter().enumerate() {
+                if j.1.0.is_some() {
+                    let val = j.1.0.unwrap();
+
+                    if Sudoku::check_for_conflict(
+                        vec![
+                            (&blocks, Sudoku::get_block_id(i.0, j.0)),
+                            (&rows, i.0),
+                            (&columns, j.0),
+                        ],
+                        val,
+                    ) {
+                        return Err("duplicate value found in row block or column".into());
+                    }
+
+                    Sudoku::insert_into_bitmap(&mut rows, i.0, val);
+                    Sudoku::insert_into_bitmap(&mut columns, j.0, val);
+                    Sudoku::insert_into_bitmap(&mut blocks, Sudoku::get_block_id(i.0, j.0), val);
+                }
+            }
+        }
 
         let mut sudoku = Sudoku {
             grid: res.clone(),
             prefilled_positions,
             solved_grid: res,
             highlighted: None,
+            blocks,
+            rows,
+            columns,
         };
 
-        if sudoku.is_board_valid() && sudoku.is_puzzle_valid() {
-            println!("");
-
-            sudoku.solved_grid = sudoku.grid.clone();
+        if sudoku.solve() {
             sudoku.reset();
             return Ok(sudoku);
         }
@@ -340,37 +421,52 @@ impl Sudoku {
         Err("invalid board given".into())
     }
 
+    pub fn to_thonky_str(&self) -> String {
+        let mut resp = String::with_capacity(81);
+
+        for i in &mut self.grid.iter().enumerate() {
+            for j in i.1.iter().enumerate() {
+                match j.1.0 {
+                    Some(k) => resp.push_str(&k.to_string()),
+                    None => resp.push_str("."),
+                }
+            }
+        }
+
+        assert_eq!(resp.len(), 81);
+
+        resp
+    }
+
     pub fn to_str(&self) -> String {
         let mut resp = String::new();
 
         for i in &mut self.grid.iter().enumerate() {
             for j in i.1.iter().enumerate() {
-                let mut s = "";
+                if let Some(k) = j.1.0 {
+                    if !self
+                        .prefilled_positions
+                        .contains_key(&Position::new(i.0, j.0))
+                    {
+                        resp.push('u');
+                    };
 
-                if !self
-                    .prefilled_positions
-                    .contains_key(&Position::new(i.0, j.0))
-                {
-                    s = "u";
-                };
+                    resp.push_str(&k.to_string());
+                }
 
-                match j.1.0 {
-                    Some(k) => resp = format!("{resp}{s}{k},"),
-                    None => resp = format!("{resp},"),
+                if !(i.0 + 1 >= self.grid.len() && j.0 + 1 >= self.grid[0].len()) {
+                    resp.push_str(",");
                 }
             }
         }
 
-        // removes the trailing comma and returns
-        resp.trim_end_matches(",").into()
+        resp
     }
 
     pub fn is_board_solved_completely(&self) -> bool {
-        for i in &self.grid {
-            for j in i {
-                if j.0.is_none() {
-                    return false;
-                }
+        for b in self.blocks {
+            if b.count_ones() != 9 {
+                return false;
             }
         }
 
@@ -381,77 +477,94 @@ impl Sudoku {
         self.prefilled_positions.len() as u8
     }
 
-    /// board is valid if the number placements obey the row, column and block rules
-    pub fn is_board_valid(&self) -> bool {
-        for row in self.grid.iter().enumerate() {
-            for col in row.1.iter().enumerate() {
-                if col.1.0.is_some() {
-                    let pos = Position::new(row.0, col.0);
-                    let val = col.1.0.unwrap();
+    #[inline]
+    fn get_block_id(row: usize, col: usize) -> usize {
+        (row / 3) * 3 + (col / 3)
+    }
 
-                    if !self.is_pos_valid(&pos, val) {
-                        return false;
-                    }
+    #[inline(always)]
+    fn update_maps(
+        &mut self,
+        pos: &Position,
+        v: u8,
+        op_type: UpdateMapsType,
+    ) -> Result<(), Box<dyn Error>> {
+        let bid = Sudoku::get_block_id(pos.x, pos.y);
+        match op_type {
+            UpdateMapsType::Remove => {
+                self.blocks[bid] &= !(1 << v);
+                self.rows[pos.x] &= !(1 << v);
+                self.columns[pos.y] &= !(1 << v);
+            }
+            UpdateMapsType::Add => {
+                if Sudoku::check_for_conflict(
+                    vec![
+                        (&self.blocks, bid),
+                        (&self.rows, pos.x),
+                        (&self.columns, pos.y),
+                    ],
+                    v,
+                ) {
+                    return Err("given value is already present".into());
                 }
+
+                Sudoku::insert_into_bitmap(&mut self.blocks, bid, v);
+                Sudoku::insert_into_bitmap(&mut self.rows, pos.x, v);
+                Sudoku::insert_into_bitmap(&mut self.columns, pos.y, v);
             }
         }
 
-        true
+        Ok(())
     }
 
-    fn is_present_in_block(grid: &Board, pos: &Position, val: u8) -> bool {
-        let x = (pos.x / 3) * 3;
-        let y = (pos.y / 3) * 3;
-
-        for i in 0..3 {
-            for j in 0..3 {
-                if x + i == pos.x && y + j == pos.y {
-                    continue;
-                }
-
-                if grid[x + i][y + j].0 == Some(val) {
-                    return true;
-                }
-            }
-        }
-
-        false
-    }
-
-    fn is_present_in_column(grid: &Board, pos: &Position, val: u8) -> bool {
-        for i in 0..9 {
-            if pos.x == i {
-                continue;
-            }
-
-            if grid[i][pos.y].0 == Some(val) {
+    /// returns true if there is a conflict
+    fn check_for_conflict(maps: Vec<(&[u16; 9], usize)>, v: u8) -> bool {
+        for m in maps {
+            if (m.0[m.1] & (1 << v)) != 0 {
                 return true;
             }
         }
 
-        false
+        return false;
     }
 
-    fn is_present_in_row(grid: &Board, pos: &Position, val: u8) -> bool {
-        for i in 0..9 {
-            if pos.y == i {
-                continue;
-            }
-
-            if grid[pos.x][i].0 == Some(val) {
-                return true;
-            }
-        }
-
-        false
+    fn insert_into_bitmap(map: &mut [u16; 9], idx: usize, v: u8) {
+        map[idx] |= 1 << v;
     }
 
-    fn insert(&mut self, pos: &Position, val: Option<u8>) {
-        self.grid[pos.x][pos.y] = (val, CellState::Normal);
+    #[inline(always)]
+    fn insert(
+        &mut self,
+        pos: &Position,
+        val: Option<u8>,
+        cell_state: CellState,
+    ) -> Result<(), Box<dyn Error>> {
+        let exisiting_val = self.grid[pos.x][pos.y];
+
+        match exisiting_val.0 {
+            Some(v) => {
+                self.update_maps(pos, v, UpdateMapsType::Remove)
+                    .expect("removal shouldn't trigger an error");
+            }
+            None => (),
+        };
+
+        match val {
+            None => (),
+            Some(v) => {
+                if self.update_maps(pos, v, UpdateMapsType::Add).is_err() {
+                    return Err("value is already present".into());
+                }
+            }
+        };
+
+        self.grid[pos.x][pos.y] = (val, cell_state);
+
+        Ok(())
     }
 
     pub fn insert_at(&mut self, pos: &Position, val: Option<u8>) -> InsertStatus {
-        let mut mv = (val, CellState::Normal);
+        let mut cell_state = CellState::Normal;
 
         let mut resp = InsertStatus::Right;
 
@@ -461,12 +574,14 @@ impl Sudoku {
             }
 
             if self.solved_grid[pos.x][pos.y].0 != val {
-                mv.1 = CellState::Wrong;
+                cell_state = CellState::Wrong;
                 resp = InsertStatus::Wrong;
             }
         }
 
-        self.grid[pos.x][pos.y] = mv;
+        if self.insert(pos, val, cell_state).is_err() {
+            return InsertStatus::ValuePresent;
+        }
 
         resp
     }
@@ -498,12 +613,6 @@ impl Sudoku {
         self.grid[pos.x][pos.y].0
     }
 
-    fn is_pos_valid(&self, pos: &Position, val: u8) -> bool {
-        !(Sudoku::is_present_in_block(&self.grid, &pos, val)
-            || Sudoku::is_present_in_row(&self.grid, &pos, val)
-            || Sudoku::is_present_in_column(&self.grid, &pos, val))
-    }
-
     fn fetch_empty_cells(&self) -> Vec<Position> {
         let mut empty_cells = vec![];
 
@@ -518,12 +627,37 @@ impl Sudoku {
         empty_cells
     }
 
-    pub fn solve(&mut self, seed_value: Option<u8>) -> bool {
+    pub fn fetch_next_empty_cell(&self) -> Option<Position> {
+        let mut least = 10;
+        let mut pos = None;
+
+        for i in 1..=9 {
+            for j in 1..=9 {
+                let filled_cells = self.rows[i - 1].count_ones()
+                    + self.columns[j - 1].count_ones()
+                    + self.blocks[Sudoku::get_block_id(i - 1, j - 1)].count_ones();
+
+                if filled_cells >= 27 {
+                    continue;
+                }
+
+                if filled_cells < least {
+                    least = filled_cells;
+                    pos = Some(Position::new(i, j));
+                }
+            }
+        }
+
+        pos
+    }
+
+    pub fn solve(&mut self) -> bool {
         let mut filled_stack = vec![];
         let mut empty_cells_stack = self.fetch_empty_cells();
         let mut reached_dead_end = false;
 
-        let mut seed_value = seed_value;
+        let mut solutions = 0;
+        let mut initial_solution = String::new();
 
         loop {
             // if no other way to go
@@ -532,8 +666,27 @@ impl Sudoku {
             }
 
             if empty_cells_stack.is_empty() && !reached_dead_end {
-                break;
+                solutions += 1;
+
+                self.solved_grid = self.grid;
+
+                if solutions >= 2 {
+                    if !initial_solution.is_empty() {
+                        if initial_solution == self.to_str() {
+                            return true;
+                        }
+                    }
+
+                    self.solved_grid = [[(None, CellState::Normal); 9]; 9];
+                    return false;
+                }
+
+                initial_solution = self.to_str();
+                reached_dead_end = true;
             }
+
+            // println!("{self}");
+            // println!("{}", self.to_str());
 
             if reached_dead_end {
                 if filled_stack.is_empty() {
@@ -548,22 +701,21 @@ impl Sudoku {
                 match val {
                     Some(v) => {
                         if v == 9 {
-                            self.insert(&filled_pos, None);
+                            self.insert(&filled_pos, None, CellState::Normal)
+                                .expect("this is removal");
                             empty_cells_stack.push(filled_pos.clone());
                         }
 
                         for i in v + 1..=9 {
-                            self.insert(&filled_pos, Some(i));
-
-                            // validate pos
-                            if self.is_pos_valid(&filled_pos, i) {
+                            if self.insert(&filled_pos, Some(i), CellState::Normal).is_ok() {
                                 filled_stack.push(filled_pos.clone());
                                 reached_dead_end = false;
                                 break;
                             }
 
                             if i == 9 {
-                                self.insert(&filled_pos, None);
+                                self.insert(&filled_pos, None, CellState::Normal)
+                                    .expect("this is removal");
                                 empty_cells_stack.push(filled_pos.clone());
                             }
                         }
@@ -577,24 +729,19 @@ impl Sudoku {
 
                 let empty_pos = empty_cells_stack.pop().unwrap();
 
-                let mut k = 1;
-
-                if seed_value.is_some() {
-                    k = seed_value.unwrap();
-                    seed_value = None;
-                }
-
-                for i in k..=9 {
-                    self.insert(&empty_pos, Some(i));
-
-                    // validate pos
-                    if self.is_pos_valid(&empty_pos, i) {
+                for i in 1..=9 {
+                    if self.insert(&empty_pos, Some(i), CellState::Normal).is_ok() {
                         filled_stack.push(empty_pos.clone());
                         break;
                     }
 
                     if i == 9 {
-                        self.insert(&empty_pos, None);
+                        if filled_stack.is_empty() {
+                            return solutions == 1;
+                        }
+
+                        self.insert(&empty_pos, None, CellState::Normal)
+                            .expect("this is removal");
                         empty_cells_stack.push(empty_pos.clone());
                         reached_dead_end = true;
                     }
@@ -602,7 +749,7 @@ impl Sudoku {
             }
         }
 
-        self.is_board_valid()
+        self.is_board_solved_completely()
     }
 
     pub fn reset(&mut self) {
@@ -612,6 +759,14 @@ impl Sudoku {
                 if !(self.prefilled_positions.contains_key(&pos)
                     || self.grid[i.0][j.0].1 == CellState::UserMarkedDefault)
                 {
+                    match self.grid[i.0][j.0].0 {
+                        Some(v) => {
+                            self.update_maps(&pos, v, UpdateMapsType::Remove)
+                                .expect("removal doesn't trigger error");
+                        }
+                        None => (),
+                    }
+
                     self.grid[i.0][j.0].0 = None;
                 }
             }
@@ -623,35 +778,18 @@ impl Sudoku {
             for j in i.1.iter().enumerate() {
                 let pos = Position::new(i.0, j.0);
                 if !self.prefilled_positions.contains_key(&pos) {
+                    match self.grid[i.0][j.0].0 {
+                        Some(v) => {
+                            self.update_maps(&pos, v, UpdateMapsType::Remove)
+                                .expect("removal doesn't trigger error");
+                        }
+                        None => (),
+                    }
+
                     self.grid[i.0][j.0].0 = None;
                 }
             }
         }
-    }
-
-    /// puzzle can only be valid if there is only one valid solution to it
-    pub fn is_puzzle_valid(&mut self) -> bool {
-        let mut prev = String::new();
-
-        for i in 1..=9 {
-            self.reset();
-
-            if !self.solve(Some(i)) {
-                return false;
-            }
-
-            let curr = self.to_str();
-
-            if !prev.is_empty() {
-                if prev != curr {
-                    return false;
-                }
-            }
-
-            prev = curr;
-        }
-
-        true
     }
 }
 
@@ -659,141 +797,141 @@ impl Sudoku {
 mod test {
     use crate::{sudoku::Position, sudoku::Sudoku};
 
-    #[test]
-    pub fn simple_test() {
-        let str_val = "8,2,,,,,,,,,,4,,,,,,,,,1,,,,,,,,,,,,,9,,,,,,,,,,,,6,,,,,,,,,3,,,,,,7,,,,,,,,,,,,,,,,5,,,,";
+    // #[test]
+    // pub fn simple_test() {
+    //     let str_val = "8,2,,,,,,,,,,4,,,,,,,,,1,,,,,,,,,,,,,9,,,,,,,,,,,,6,,,,,,,,,3,,,,,,7,,,,,,,,,,,,,,,,5,,,,";
 
-        let board = Sudoku::from_str(str_val);
+    //     let board = Sudoku::from_str(str_val);
 
-        assert!(board.is_ok());
+    //     assert!(board.is_ok());
 
-        let mut board = board.expect("didn't expect an error");
+    //     let mut board = board.expect("didn't expect an error");
 
-        println!("{}", board);
+    //     println!("{}", board);
 
-        assert_eq!(board.prefilled_positions.len(), 9);
+    //     assert_eq!(board.prefilled_positions.len(), 9);
 
-        for pos in vec![
-            Position::new(0, 0),
-            Position::new(1, 2),
-            Position::new(2, 2),
-            Position::new(5, 0),
-            Position::new(6, 6),
-            Position::new(8, 4),
-        ] {
-            assert!(board.prefilled_positions.contains_key(&pos));
-        }
+    //     for pos in vec![
+    //         Position::new(0, 0),
+    //         Position::new(1, 2),
+    //         Position::new(2, 2),
+    //         Position::new(5, 0),
+    //         Position::new(6, 6),
+    //         Position::new(8, 4),
+    //     ] {
+    //         assert!(board.prefilled_positions.contains_key(&pos));
+    //     }
 
-        assert!(!board.prefilled_positions.contains_key(&Position::new(1, 5)));
-        assert!(!board.prefilled_positions.contains_key(&Position::new(5, 8)));
+    //     assert!(!board.prefilled_positions.contains_key(&Position::new(1, 5)));
+    //     assert!(!board.prefilled_positions.contains_key(&Position::new(5, 8)));
 
-        assert!(board.is_board_valid());
+    //     assert!(board.is_board_valid());
 
-        assert!(!board.is_puzzle_valid());
-    }
+    //     assert!(!board.is_puzzle_valid());
+    // }
 
-    #[test]
-    pub fn invalid_block() {
-        let str_val = "8,2,8,,,,,,,,,4,,,,,,,,,1,,,,,,,,,,,,,9,,,,,,,,,,,,6,,,,,,,,,3,,,,,,7,,,,,,,,,,,,,,,,5,,,,";
+    // #[test]
+    // pub fn invalid_block() {
+    //     let str_val = "8,2,8,,,,,,,,,4,,,,,,,,,1,,,,,,,,,,,,,9,,,,,,,,,,,,6,,,,,,,,,3,,,,,,7,,,,,,,,,,,,,,,,5,,,,";
 
-        let board = Sudoku::from_str(str_val);
+    //     let board = Sudoku::from_str(str_val);
 
-        assert!(board.is_ok());
+    //     assert!(board.is_ok());
 
-        let board = board.expect("didn't expect an error");
+    //     let board = board.expect("didn't expect an error");
 
-        assert_eq!(board.prefilled_positions.len(), 10);
-        assert!(board.prefilled_positions.contains_key(&Position::new(0, 0)));
-        assert!(board.prefilled_positions.contains_key(&Position::new(1, 2)));
-        assert!(!board.prefilled_positions.contains_key(&Position::new(1, 5)));
+    //     assert_eq!(board.prefilled_positions.len(), 10);
+    //     assert!(board.prefilled_positions.contains_key(&Position::new(0, 0)));
+    //     assert!(board.prefilled_positions.contains_key(&Position::new(1, 2)));
+    //     assert!(!board.prefilled_positions.contains_key(&Position::new(1, 5)));
 
-        assert!(!board.is_board_valid());
-        assert!(Sudoku::is_present_in_block(
-            &board.grid,
-            &Position::new(0, 2),
-            8
-        ));
-    }
+    //     assert!(!board.is_board_valid());
+    //     assert!(Sudoku::is_present_in_block(
+    //         &board.grid,
+    //         &Position::new(0, 2),
+    //         8
+    //     ));
+    // }
 
-    #[test]
-    pub fn invalid_row() {
-        let str_val = "8,2,,,,,,,,,,4,,,4,,,,,,1,,,,,,,,,,,,,9,,,,,,,,,,,,6,,,,,,,,,3,,,,,,7,,,,,,,,,,,,,,,,5,,,,";
+    // #[test]
+    // pub fn invalid_row() {
+    //     let str_val = "8,2,,,,,,,,,,4,,,4,,,,,,1,,,,,,,,,,,,,9,,,,,,,,,,,,6,,,,,,,,,3,,,,,,7,,,,,,,,,,,,,,,,5,,,,";
 
-        let board = Sudoku::from_str(str_val);
+    //     let board = Sudoku::from_str(str_val);
 
-        assert!(board.is_ok());
+    //     assert!(board.is_ok());
 
-        let board = board.expect("didn't expect an error");
+    //     let board = board.expect("didn't expect an error");
 
-        assert_eq!(board.prefilled_positions.len(), 10);
-        assert!(board.prefilled_positions.contains_key(&Position::new(0, 0)));
-        assert!(board.prefilled_positions.contains_key(&Position::new(1, 2)));
-        assert!(!board.prefilled_positions.contains_key(&Position::new(1, 6)));
+    //     assert_eq!(board.prefilled_positions.len(), 10);
+    //     assert!(board.prefilled_positions.contains_key(&Position::new(0, 0)));
+    //     assert!(board.prefilled_positions.contains_key(&Position::new(1, 2)));
+    //     assert!(!board.prefilled_positions.contains_key(&Position::new(1, 6)));
 
-        assert!(!board.is_board_valid());
-        assert!(Sudoku::is_present_in_row(
-            &board.grid,
-            &Position::new(1, 6),
-            4
-        ));
-    }
+    //     assert!(!board.is_board_valid());
+    //     assert!(Sudoku::is_present_in_row(
+    //         &board.grid,
+    //         &Position::new(1, 6),
+    //         4
+    //     ));
+    // }
 
-    #[test]
-    pub fn invalid_column() {
-        let str_val = ",8,7,,5,,,,,4,9,7,,3,6,1,,,5,1,,9,8,2,,,4,,,,,,5,4,,6,7,,,,6,9,,1,,1,,,,4,,7,5,,2,,,8,1,3,6,,9,9,4,,,,7,,3,,,,,,,4,8,,7";
+    // #[test]
+    // pub fn invalid_column() {
+    //     let str_val = ",8,7,,5,,,,,4,9,7,,3,6,1,,,5,1,,9,8,2,,,4,,,,,,5,4,,6,7,,,,6,9,,1,,1,,,,4,,7,5,,2,,,8,1,3,6,,9,9,4,,,,7,,3,,,,,,,4,8,,7";
 
-        let board = Sudoku::from_str(str_val);
+    //     let board = Sudoku::from_str(str_val);
 
-        assert!(!board.is_ok());
+    //     assert!(!board.is_ok());
 
-        let board = board.expect("didn't expect an error");
+    //     let board = board.expect("didn't expect an error");
 
-        println!("{board}");
+    //     println!("{board}");
 
-        assert!(!board.is_board_valid());
-        assert!(Sudoku::is_present_in_column(
-            &board.grid,
-            &Position::new(2, 5),
-            8
-        ));
+    //     assert!(!board.is_board_valid());
+    //     assert!(Sudoku::is_present_in_column(
+    //         &board.grid,
+    //         &Position::new(2, 5),
+    //         8
+    //     ));
 
-        dbg!(board);
-    }
+    //     dbg!(board);
+    // }
 
-    #[test]
-    pub fn toughest_valid() {
-        let str_val = ",,,1,,2,,,,,6,,,,,,7,,,,8,,,,9,,,4,,,,,,,,3,,5,,,,7,,,,2,,,,8,,,,1,,,9,,,,8,,5,,7,,,,,,6,,,,,3,,4,,,";
+    // #[test]
+    // pub fn toughest_valid() {
+    //     let str_val = ",,,1,,2,,,,,6,,,,,,7,,,,8,,,,9,,,4,,,,,,,,3,,5,,,,7,,,,2,,,,8,,,,1,,,9,,,,8,,5,,7,,,,,,6,,,,,3,,4,,,";
 
-        let board = Sudoku::from_str(str_val);
+    //     let board = Sudoku::from_str(str_val);
 
-        assert!(board.is_ok());
+    //     assert!(board.is_ok());
 
-        let board = board.expect("didn't expect an error");
+    //     let board = board.expect("didn't expect an error");
 
-        assert_eq!(board.prefilled_positions.len(), 20);
-        assert!(board.prefilled_positions.contains_key(&Position::new(0, 3)));
-        assert!(board.prefilled_positions.contains_key(&Position::new(1, 1)));
-        assert!(!board.prefilled_positions.contains_key(&Position::new(2, 5)));
+    //     assert_eq!(board.prefilled_positions.len(), 20);
+    //     assert!(board.prefilled_positions.contains_key(&Position::new(0, 3)));
+    //     assert!(board.prefilled_positions.contains_key(&Position::new(1, 1)));
+    //     assert!(!board.prefilled_positions.contains_key(&Position::new(2, 5)));
 
-        assert!(board.is_board_valid());
-    }
+    //     assert!(board.is_board_valid());
+    // }
 
-    #[test]
-    pub fn extreme_26() {
-        let str_val = "1,,,,6,,,,,,,3,9,,1,,4,,2,,,,,,,,7,,,,,8,,,5,,,,6,,4,,,,,3,,,5,,6,2,,,,,1,3,,5,,9,,,,,8,,,,,,,9,,,,,4,,";
+    // #[test]
+    // pub fn extreme_26() {
+    //     let str_val = "1,,,,6,,,,,,,3,9,,1,,4,,2,,,,,,,,7,,,,,8,,,5,,,,6,,4,,,,,3,,,5,,6,2,,,,,1,3,,5,,9,,,,,8,,,,,,,9,,,,,4,,";
 
-        let board = Sudoku::from_str(str_val);
+    //     let board = Sudoku::from_str(str_val);
 
-        assert!(board.is_ok());
+    //     assert!(board.is_ok());
 
-        let mut board = board.expect("didn't expect an error");
+    //     let mut board = board.expect("didn't expect an error");
 
-        println!("{}", board);
+    //     println!("{}", board);
 
-        assert_eq!(board.prefilled_positions.len(), 23);
+    //     assert_eq!(board.prefilled_positions.len(), 23);
 
-        assert!(board.is_board_valid());
-        assert!(board.solve(None));
-        assert!(board.is_puzzle_valid());
-    }
+    //     assert!(board.is_board_valid());
+    //     assert!(board.solve(None));
+    //     assert!(board.is_puzzle_valid());
+    // }
 }

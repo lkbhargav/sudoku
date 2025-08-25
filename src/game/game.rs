@@ -1,5 +1,6 @@
 use std::{process::exit, time::Instant};
 
+use cli_clipboard::{ClipboardContext, ClipboardProvider};
 use colored::Colorize;
 use humantime::format_duration;
 
@@ -124,6 +125,8 @@ impl Game {
                 break;
             }
 
+            let mut ctx = ClipboardContext::new().expect("error initializing clipboard context");
+
             let ans = prompt(
                 "Enter your guess (ex: g007 - means fill grid location 0 (x), 0 (y) with 7)",
                 "",
@@ -197,6 +200,27 @@ impl Game {
                 UserRequest::RemoveHighlight => {
                     self.board.as_mut().unwrap().highlight(None);
                 }
+                UserRequest::ShareOriginal => {
+                    let v = &self.initital_board_layout;
+                    message = Some(Message::new(v, MessageType::Success));
+
+                    ctx.set_contents(v.into())
+                        .expect("error copying to clipboard 1");
+                }
+                UserRequest::ShareCurrentState => {
+                    msg = self.board.as_mut().unwrap().to_str();
+                    message = Some(Message::new(&msg, MessageType::Success));
+
+                    ctx.set_contents(msg.clone())
+                        .expect("error copying to clipboard 2");
+                }
+                UserRequest::ShareThonkyVersion => {
+                    msg = self.board.as_mut().unwrap().to_thonky_str();
+                    message = Some(Message::new(&msg, MessageType::Success));
+
+                    ctx.set_contents(msg.clone())
+                        .expect("error copying to clipboard 3");
+                }
                 UserRequest::TimeElapsed => {
                     msg = format!("Time elapsed: {}", format_duration(start_time.elapsed()));
                     message = Some(Message::new(&msg, MessageType::Normal));
@@ -209,7 +233,7 @@ impl Game {
                 }
                 UserRequest::Giveup => {
                     self.board.as_mut().unwrap().reset();
-                    self.board.as_mut().unwrap().solve(None);
+                    self.board.as_mut().unwrap().solve();
                     give_up = true;
                 }
                 UserRequest::Exit => {
@@ -231,11 +255,12 @@ impl Game {
         // clears the screen without a scrollbar
         print!("{esc}c", esc = 27 as char);
 
-        println!(
-            "Original board: {}\nCurrent progress: {}\n",
-            self.initital_board_layout,
-            board.to_str()
-        );
+        // println!(
+        //     "Thonky repr.: {}\nOriginal board: {}\nCurrent progress: {}\n",
+        //     board.to_thonky_str(),
+        //     self.initital_board_layout,
+        //     board.to_str()
+        // );
         println!(
             "Initial clues: {} {} # mistakes: {} {} # hints: {}\n",
             self.starting_clues.to_string().bold(),

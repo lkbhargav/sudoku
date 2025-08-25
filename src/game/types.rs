@@ -59,11 +59,23 @@ pub enum UserRequest {
     Hint(Position),
     Highlight(u8),
     RemoveHighlight,
+    ShareOriginal,
+    ShareCurrentState,
+    ShareThonkyVersion,
     TimeElapsed,
     Exit,
 }
 
 impl UserRequest {
+    #[inline]
+    fn validate_len(c: &Vec<char>, min_len: usize) -> bool {
+        if c.len() - 1 != min_len {
+            return false;
+        }
+
+        true
+    }
+
     pub fn parse(ui: &str) -> Result<Self, Box<dyn Error>> {
         let ui = ui.to_lowercase();
 
@@ -75,7 +87,7 @@ impl UserRequest {
 
         match chars[0] {
             'g' => {
-                if chars.len() - 1 != 3 {
+                if !UserRequest::validate_len(&chars, 3) {
                     return Err("invalid guess made, please try again".into());
                 }
 
@@ -114,7 +126,7 @@ impl UserRequest {
                 return Ok(Self::Guess(Position::new(x, y), val));
             }
             'h' => {
-                if chars.len() - 1 != 2 {
+                if !UserRequest::validate_len(&chars, 2) {
                     return Err("invalid hint requested, please try again".into());
                 }
 
@@ -139,7 +151,7 @@ impl UserRequest {
                 return Ok(Self::Hint(Position::new(x, y)));
             }
             'i' => {
-                if chars.len() - 1 != 1 {
+                if !UserRequest::validate_len(&chars, 1) {
                     return Ok(Self::RemoveHighlight);
                 }
 
@@ -155,6 +167,22 @@ impl UserRequest {
                 }
 
                 return Ok(Self::Highlight(val));
+            }
+            's' => {
+                if !UserRequest::validate_len(&chars, 1) {
+                    return Err("expected share type but found none, please try again".into());
+                }
+
+                Ok(match chars[1] {
+                    '1' => UserRequest::ShareOriginal,
+                    '2' => UserRequest::ShareCurrentState,
+                    '3' => UserRequest::ShareThonkyVersion,
+                    _ => {
+                        return Err(
+                            "invalid share type requested, please fix it and try again".into()
+                        );
+                    }
+                })
             }
             't' => return Ok(Self::TimeElapsed),
             'u' => return Ok(Self::Undo),

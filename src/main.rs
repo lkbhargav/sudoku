@@ -1,8 +1,15 @@
-use sudoko::game::game::Game;
+use sudoko::{game::game::Game, sudoku::Sudoku};
 
+// Website to validate for problem uniqueness: https://www.thonky.com/sudoku/solution-count
 fn main() {
     let mut g = Game::new();
     g.start_game();
+
+    // let board = Sudoku::generate_random_board(40);
+
+    // println!("{board}");
+
+    // println!("{:?}", board.fetch_next_empty_cell());
 }
 
 fn test() {
