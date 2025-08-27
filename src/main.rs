@@ -5,7 +5,7 @@ fn main() {
     // let mut g = Game::new();
     // g.start_game();
 
-    let boards = Sudoku::generate_random_boards(40, 10);
+    let boards = Sudoku::generate_random_boards(35, 100);
 
     let num_threads = num_cpus::get();
 

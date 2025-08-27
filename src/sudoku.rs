@@ -696,22 +696,20 @@ impl Sudoku {
     }
 
     pub fn fetch_next_empty_cell(&self) -> Option<Position> {
-        let mut least = 10;
+        let mut max_filled = 0;
         let mut pos = None;
 
-        for i in 1..=9 {
-            for j in 1..=9 {
-                let filled_cells = self.rows[i - 1].count_ones()
-                    + self.columns[j - 1].count_ones()
-                    + self.blocks[Sudoku::get_block_id(i - 1, j - 1)].count_ones();
+        for i in 0..9 {
+            for j in 0..9 {
+                if self.grid[i][j].0.is_none() {
+                    let sum = self.rows[i].count_ones()
+                        + self.columns[j].count_ones()
+                        + self.blocks[Sudoku::get_block_id(i, j)].count_ones();
+                    if sum > max_filled {
+                        max_filled = sum;
 
-                if filled_cells >= 27 {
-                    continue;
-                }
-
-                if filled_cells < least {
-                    least = filled_cells;
-                    pos = Some(Position::new(i, j));
+                        pos = Some(Position::new(i, j));
+                    }
                 }
             }
         }
@@ -721,19 +719,21 @@ impl Sudoku {
 
     pub fn solve(&mut self) -> bool {
         let mut filled_stack = vec![];
-        let mut empty_cells_stack = self.fetch_empty_cells();
+        // let mut empty_cells_stack = self.fetch_empty_cells();
         let mut reached_dead_end = false;
 
         let mut solutions = 0;
         let mut initial_solution = String::new();
 
         loop {
+            let next_empty_cell = self.fetch_next_empty_cell();
+
             // if no other way to go
-            if empty_cells_stack.is_empty() && filled_stack.is_empty() {
+            if next_empty_cell.is_none() && filled_stack.is_empty() {
                 return false;
             }
 
-            if empty_cells_stack.is_empty() && !reached_dead_end {
+            if next_empty_cell.is_none() && !reached_dead_end {
                 solutions += 1;
 
                 self.solved_grid = self.grid;
@@ -771,7 +771,7 @@ impl Sudoku {
                         if v == 9 {
                             self.insert(&filled_pos, None, CellState::Normal)
                                 .expect("this is removal");
-                            empty_cells_stack.push(filled_pos.clone());
+                            // empty_cells_stack.push(filled_pos.clone());
                         }
 
                         for i in v + 1..=9 {
@@ -784,18 +784,18 @@ impl Sudoku {
                             if i == 9 {
                                 self.insert(&filled_pos, None, CellState::Normal)
                                     .expect("this is removal");
-                                empty_cells_stack.push(filled_pos.clone());
+                                // empty_cells_stack.push(filled_pos.clone());
                             }
                         }
                     }
                     None => return false,
                 }
             } else {
-                if empty_cells_stack.is_empty() {
+                if next_empty_cell.is_none() {
                     break;
                 }
 
-                let empty_pos = empty_cells_stack.pop().unwrap();
+                let empty_pos = next_empty_cell.unwrap();
 
                 for i in 1..=9 {
                     if self.insert(&empty_pos, Some(i), CellState::Normal).is_ok() {
@@ -810,7 +810,7 @@ impl Sudoku {
 
                         self.insert(&empty_pos, None, CellState::Normal)
                             .expect("this is removal");
-                        empty_cells_stack.push(empty_pos.clone());
+                        // empty_cells_stack.push(empty_pos.clone());
                         reached_dead_end = true;
                     }
                 }
