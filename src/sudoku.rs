@@ -5,6 +5,13 @@ use std::{
     error::Error,
     fmt::Display,
     io::{self, Write},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
+    thread,
+    time::{Duration, Instant},
 };
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
@@ -173,15 +180,7 @@ impl Display for Sudoku {
 impl Sudoku {
     const TOTAL_POSITIONS: usize = 81;
 
-    pub fn generate_random_board(number_of_clues: u8) -> Self {
-        let mut number_of_clues = number_of_clues;
-
-        if number_of_clues < 10 {
-            number_of_clues = 10;
-        } else if number_of_clues > 80 {
-            number_of_clues = 80;
-        }
-
+    fn random_board(number_of_clues: &u8) -> Self {
         let mut rng = rand::rng();
 
         'outer: loop {
@@ -294,12 +293,71 @@ impl Sudoku {
 
             if board.solve() {
                 board.reset();
+                print!("!");
                 return board;
             }
 
             print!(".");
             io::stdout().flush().expect("Failed to flush stdout");
         }
+    }
+
+    pub fn generate_random_board(number_of_clues: u8) -> Self {
+        let mut number_of_clues = number_of_clues;
+
+        if number_of_clues < 10 {
+            number_of_clues = 10;
+        } else if number_of_clues > 80 {
+            number_of_clues = 80;
+        }
+
+        Sudoku::random_board(&number_of_clues)
+    }
+
+    pub fn generate_random_boards(number_of_clues: u8, number_of_puzzles: u16) -> Vec<Self> {
+        let num_threads = num_cpus::get();
+
+        let mut boards = vec![];
+        let mut handlers = vec![];
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        let (tx, rx) = mpsc::channel::<(Sudoku, Duration)>();
+
+        for _ in 0..num_threads {
+            let tx_clone = tx.clone();
+            let counter_clone = counter.clone();
+
+            handlers.push(thread::spawn(move || {
+                loop {
+                    let now = Instant::now();
+
+                    let board = Sudoku::random_board(&number_of_clues);
+
+                    tx_clone
+                        .send((board, now.elapsed()))
+                        .expect("error sending on channel");
+
+                    counter_clone.fetch_add(1, Ordering::Relaxed);
+
+                    if counter_clone.load(Ordering::Relaxed) >= number_of_puzzles as usize {
+                        drop(tx_clone);
+                        break;
+                    }
+                }
+            }));
+        }
+
+        drop(tx);
+
+        for m in rx {
+            boards.push(m.0);
+        }
+
+        for handler in handlers {
+            handler.join().expect("error join the thread handler");
+        }
+
+        boards
     }
 
     pub fn from_str(inp: &str) -> Result<Self, Box<dyn Error>> {

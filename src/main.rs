@@ -2,8 +2,18 @@ use sudoko::{game::game::Game, sudoku::Sudoku};
 
 // Website to validate for problem uniqueness: https://www.thonky.com/sudoku/solution-count
 fn main() {
-    let mut g = Game::new();
-    g.start_game();
+    // let mut g = Game::new();
+    // g.start_game();
+
+    let boards = Sudoku::generate_random_boards(40, 10);
+
+    let num_threads = num_cpus::get();
+
+    println!("\nBoards ({} with {} threads)", boards.len(), num_threads);
+
+    for board in boards {
+        println!("{}", board.to_thonky_str());
+    }
 
     // let board = Sudoku::generate_random_board(40);
 
