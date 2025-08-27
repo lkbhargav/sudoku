@@ -180,7 +180,10 @@ impl Display for Sudoku {
 impl Sudoku {
     const TOTAL_POSITIONS: usize = 81;
 
-    fn random_board(number_of_clues: &u8) -> Self {
+    fn random_board(
+        number_of_clues: &u8,
+        conditonal_run_info: Option<(usize, Arc<AtomicUsize>)>,
+    ) -> Option<Self> {
         let mut rng = rand::rng();
 
         'outer: loop {
@@ -189,6 +192,12 @@ impl Sudoku {
             let mut blocks: [u16; 9] = [0; 9];
             let mut rows: [u16; 9] = [0; 9];
             let mut columns: [u16; 9] = [0; 9];
+
+            if let Some(cri) = conditonal_run_info.clone() {
+                if cri.1.load(Ordering::Relaxed) >= cri.0 {
+                    return None;
+                }
+            };
 
             for i in 0..9 {
                 for j in 0..9 {
@@ -220,7 +229,6 @@ impl Sudoku {
                 }
             }
 
-            // print!(",");
             io::stdout().flush().expect("Failed to flush stdout");
 
             let mut number_of_removals = 81 - number_of_clues;
@@ -235,7 +243,6 @@ impl Sudoku {
                 }
             }
 
-            // print!("!");
             io::stdout().flush().expect("Failed to flush stdout");
 
             let mut prefilled_positions = HashMap::new();
@@ -293,8 +300,7 @@ impl Sudoku {
 
             if board.solve() {
                 board.reset();
-                print!("!");
-                return board;
+                return Some(board);
             }
 
             print!(".");
@@ -302,7 +308,7 @@ impl Sudoku {
         }
     }
 
-    pub fn generate_random_board(number_of_clues: u8) -> Self {
+    pub fn generate_random_board(number_of_clues: u8) -> Option<Self> {
         let mut number_of_clues = number_of_clues;
 
         if number_of_clues < 10 {
@@ -311,10 +317,10 @@ impl Sudoku {
             number_of_clues = 80;
         }
 
-        Sudoku::random_board(&number_of_clues)
+        Sudoku::random_board(&number_of_clues, None)
     }
 
-    pub fn generate_random_boards(number_of_clues: u8, number_of_puzzles: u16) -> Vec<Self> {
+    pub fn generate_random_boards(number_of_clues: u8, number_of_puzzles: usize) -> Vec<Self> {
         let num_threads = num_cpus::get();
 
         let mut boards = vec![];
@@ -331,11 +337,16 @@ impl Sudoku {
                 loop {
                     let now = Instant::now();
 
-                    let board = Sudoku::random_board(&number_of_clues);
+                    let board = Sudoku::random_board(
+                        &number_of_clues,
+                        Some((number_of_puzzles, counter_clone.clone())),
+                    );
 
-                    tx_clone
-                        .send((board, now.elapsed()))
-                        .expect("error sending on channel");
+                    if let Some(b) = board {
+                        tx_clone
+                            .send((b, now.elapsed()))
+                            .expect("error sending on channel");
+                    };
 
                     counter_clone.fetch_add(1, Ordering::Relaxed);
 
@@ -349,7 +360,11 @@ impl Sudoku {
 
         drop(tx);
 
+        let mut counter = 0;
+
         for m in rx {
+            counter += 1;
+            print!("{counter}");
             boards.push(m.0);
         }
 
@@ -679,20 +694,6 @@ impl Sudoku {
 
     fn get(&self, pos: &Position) -> Option<u8> {
         self.grid[pos.x][pos.y].0
-    }
-
-    fn fetch_empty_cells(&self) -> Vec<Position> {
-        let mut empty_cells = vec![];
-
-        for i in &mut self.grid.iter().enumerate() {
-            for j in i.1.iter().enumerate() {
-                if j.1.0.is_none() {
-                    empty_cells.push(Position::new(i.0, j.0));
-                }
-            }
-        }
-
-        empty_cells
     }
 
     pub fn fetch_next_empty_cell(&self) -> Option<Position> {

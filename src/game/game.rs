@@ -74,7 +74,7 @@ impl Game {
 
                     let board = Sudoku::generate_random_board(clues);
 
-                    self.set_board(board);
+                    self.set_board(board.unwrap());
                     self.game_loop();
                 }
                 MainSelection::Exit => exit(1),
