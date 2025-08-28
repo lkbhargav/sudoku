@@ -28,8 +28,12 @@ impl Game {
 
     pub fn start_game(&mut self) {
         loop {
-            let main_selection_options =
-                vec![MainSelection::New, MainSelection::Load, MainSelection::Exit];
+            let main_selection_options = vec![
+                MainSelection::New,
+                MainSelection::Load,
+                MainSelection::Generate,
+                MainSelection::Exit,
+            ];
 
             let main_selection = prompt_select(
                 "Select one of the following options",
@@ -76,6 +80,38 @@ impl Game {
 
                     self.set_board(board.unwrap());
                     self.game_loop();
+                }
+                MainSelection::Generate => {
+                    let clues = prompt("How many clues do you want to have?", "40");
+
+                    let clues = match clues.parse::<u8>() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            println!("expected a number but found characters: {}", e.to_string());
+                            continue;
+                        }
+                    };
+
+                    let number_of_boards =
+                        prompt("How many boards do you want to generate?", "100");
+
+                    let number_of_boards = match number_of_boards.parse::<usize>() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            println!("expected a number but found characters: {}", e.to_string());
+                            continue;
+                        }
+                    };
+
+                    let boards = Sudoku::generate_random_boards(clues, number_of_boards);
+
+                    println!("\nUnqiue and valid boards");
+
+                    for board in &boards.0 {
+                        println!("{}", board.to_thonky_str());
+                    }
+
+                    println!("\nBoards ({} with {} threads)", boards.0.len(), boards.1);
                 }
                 MainSelection::Exit => exit(1),
             }

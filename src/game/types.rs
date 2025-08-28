@@ -6,6 +6,7 @@ use crate::sudoku::Position;
 pub enum MainSelection {
     New,
     Load,
+    Generate,
     #[default]
     Exit,
 }
@@ -15,6 +16,7 @@ impl Display for MainSelection {
         match &self {
             MainSelection::Load => write!(f, "Load"),
             MainSelection::New => write!(f, "New"),
+            MainSelection::Generate => write!(f, "Generate boards"),
             MainSelection::Exit => write!(f, "Exit"),
         }
     }

@@ -1,4 +1,5 @@
 use colored::Colorize;
+use dashmap::DashMap;
 use rand::Rng;
 use std::{
     collections::HashMap,
@@ -14,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy, Hash)]
 enum CellState {
     Normal,
     UserMarkedDefault,
@@ -92,6 +93,14 @@ impl Position {
 
         Ok(Position::new(x, y))
     }
+}
+
+#[derive(Debug, Clone)]
+struct RandomBoardsRequestArgs {
+    number_of_puzzles: usize,
+    number_of_found_counter: Arc<AtomicUsize>,
+    total_number_of_puzzles_searched: Arc<AtomicUsize>,
+    completed_map: Arc<DashMap<Board, bool>>,
 }
 
 #[derive(Debug)]
@@ -182,7 +191,7 @@ impl Sudoku {
 
     fn random_board(
         number_of_clues: &u8,
-        conditonal_run_info: Option<(usize, Arc<AtomicUsize>)>,
+        conditonal_run_info: Option<RandomBoardsRequestArgs>,
     ) -> Option<Self> {
         let mut rng = rand::rng();
 
@@ -194,7 +203,7 @@ impl Sudoku {
             let mut columns: [u16; 9] = [0; 9];
 
             if let Some(cri) = conditonal_run_info.clone() {
-                if cri.1.load(Ordering::Relaxed) >= cri.0 {
+                if cri.number_of_found_counter.load(Ordering::Relaxed) >= cri.number_of_puzzles {
                     return None;
                 }
             };
@@ -229,8 +238,6 @@ impl Sudoku {
                 }
             }
 
-            io::stdout().flush().expect("Failed to flush stdout");
-
             let mut number_of_removals = 81 - number_of_clues;
 
             while number_of_removals > 0 {
@@ -243,7 +250,13 @@ impl Sudoku {
                 }
             }
 
-            io::stdout().flush().expect("Failed to flush stdout");
+            if let Some(cri) = conditonal_run_info.clone() {
+                if cri.completed_map.contains_key(&grid) {
+                    continue;
+                } else {
+                    cri.completed_map.insert(grid, true);
+                }
+            };
 
             let mut prefilled_positions = HashMap::new();
 
@@ -298,13 +311,27 @@ impl Sudoku {
 
             // println!("board.is_puzzle_valid(): {}", board.is_puzzle_valid());
 
+            if let Some(cri) = conditonal_run_info.clone() {
+                cri.total_number_of_puzzles_searched
+                    .fetch_add(1, Ordering::Relaxed);
+            };
+
             if board.solve() {
                 board.reset();
                 return Some(board);
             }
 
-            print!(".");
-            io::stdout().flush().expect("Failed to flush stdout");
+            if let Some(cri) = conditonal_run_info.clone() {
+                print!(
+                    "\rProgress: {}/{}                   ",
+                    cri.number_of_found_counter.load(Ordering::Relaxed),
+                    cri.total_number_of_puzzles_searched.load(Ordering::Relaxed)
+                );
+                io::stdout().flush().unwrap();
+            };
+
+            // print!(".");
+            // io::stdout().flush().expect("Failed to flush stdout");
         }
     }
 
@@ -320,18 +347,26 @@ impl Sudoku {
         Sudoku::random_board(&number_of_clues, None)
     }
 
-    pub fn generate_random_boards(number_of_clues: u8, number_of_puzzles: usize) -> Vec<Self> {
-        let num_threads = num_cpus::get();
+    pub fn generate_random_boards(
+        number_of_clues: u8,
+        number_of_puzzles: usize,
+    ) -> (Vec<Self>, usize) {
+        let num_threads = num_cpus::get() - 1;
 
         let mut boards = vec![];
         let mut handlers = vec![];
-        let counter = Arc::new(AtomicUsize::new(0));
+        let found_counter = Arc::new(AtomicUsize::new(0));
+        let total_seen_counter = Arc::new(AtomicUsize::new(0));
+
+        let dashmap: Arc<DashMap<Board, bool>> = Arc::new(DashMap::new());
 
         let (tx, rx) = mpsc::channel::<(Sudoku, Duration)>();
 
         for _ in 0..num_threads {
             let tx_clone = tx.clone();
-            let counter_clone = counter.clone();
+            let found_counter_clone = found_counter.clone();
+            let total_seen_counter_clone = total_seen_counter.clone();
+            let dashmap_clone = dashmap.clone();
 
             handlers.push(thread::spawn(move || {
                 loop {
@@ -339,18 +374,30 @@ impl Sudoku {
 
                     let board = Sudoku::random_board(
                         &number_of_clues,
-                        Some((number_of_puzzles, counter_clone.clone())),
+                        Some(RandomBoardsRequestArgs {
+                            number_of_puzzles: number_of_puzzles,
+                            number_of_found_counter: found_counter_clone.clone(),
+                            total_number_of_puzzles_searched: total_seen_counter_clone.clone(),
+                            completed_map: dashmap_clone.clone(),
+                        }),
                     );
 
                     if let Some(b) = board {
                         tx_clone
                             .send((b, now.elapsed()))
                             .expect("error sending on channel");
+
+                        found_counter_clone.fetch_add(1, Ordering::Relaxed);
                     };
 
-                    counter_clone.fetch_add(1, Ordering::Relaxed);
+                    print!(
+                        "\rProgress: {}/{}                   ",
+                        found_counter_clone.load(Ordering::Relaxed),
+                        total_seen_counter_clone.load(Ordering::Relaxed)
+                    );
+                    io::stdout().flush().unwrap();
 
-                    if counter_clone.load(Ordering::Relaxed) >= number_of_puzzles as usize {
+                    if found_counter_clone.load(Ordering::Relaxed) >= number_of_puzzles as usize {
                         drop(tx_clone);
                         break;
                     }
@@ -360,11 +407,7 @@ impl Sudoku {
 
         drop(tx);
 
-        let mut counter = 0;
-
         for m in rx {
-            counter += 1;
-            print!("{counter}");
             boards.push(m.0);
         }
 
@@ -372,7 +415,7 @@ impl Sudoku {
             handler.join().expect("error join the thread handler");
         }
 
-        boards
+        (boards, num_threads)
     }
 
     pub fn from_str(inp: &str) -> Result<Self, Box<dyn Error>> {
