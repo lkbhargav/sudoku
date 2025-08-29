@@ -5,7 +5,7 @@ use humantime::format_duration;
 
 use crate::{
     game::types::{MainSelection, Message, MessageType, UserRequest},
-    sudoku::{HintStatus, InsertStatus, Position, Sudoku},
+    sudoku::{CellState, HintStatus, InsertStatus, Position, Sudoku},
     util::{prompt, prompt_select},
 };
 
@@ -22,10 +22,6 @@ pub struct Game {
 }
 
 impl Game {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn start_game(&mut self) {
         loop {
             let main_selection_options = vec![
@@ -145,9 +141,10 @@ impl Game {
             if self.board.as_mut().unwrap().is_board_solved_completely() {
                 if !give_up {
                     msg = format!(
-                        "{}\nTime taken: {}\n",
+                        "{}\nTime taken: {}\n\n{}",
                         "Congragulations!",
-                        format_duration(start_time.elapsed())
+                        format_duration(start_time.elapsed()),
+                        self.initital_board_layout
                     );
 
                     message = Some(Message::new(&msg, MessageType::Success));
@@ -286,15 +283,11 @@ impl Game {
             Some(b) => b,
         };
 
+        let mut instructions = Game::get_instructions();
+
         // clears the screen without a scrollbar
         print!("{esc}c", esc = 27 as char);
 
-        // println!(
-        //     "Thonky repr.: {}\nOriginal board: {}\nCurrent progress: {}\n",
-        //     board.to_thonky_str(),
-        //     self.initital_board_layout,
-        //     board.to_str()
-        // );
         println!(
             "Initial clues: {} {} # mistakes: {} {} # hints: {}\n",
             self.starting_clues.to_string().bold(),
@@ -304,7 +297,85 @@ impl Game {
             self.additional_clues.to_string().magenta().bold()
         );
 
-        println!("{board}");
+        let highlighted = board.get_highlighted();
+        let mut board_str = String::with_capacity(1500);
+
+        for i in &mut board.get_grid().iter().enumerate() {
+            if i.0 == 0 {
+                board_str.push_str(&format!(
+                    "{}",
+                    "    0  1  2   3  4  5   6  7  8 \n".italic()
+                ));
+                board_str.push_str(&format!(
+                    "{}         {}\n",
+                    "   -----------------------------".blue(),
+                    instructions.pop().unwrap_or_default()
+                ));
+            }
+
+            board_str.push_str(&format!("{} {}", i.0.to_string().italic(), "|".blue()));
+
+            for j in i.1.iter().enumerate() {
+                match j.1.0 {
+                    Some(v) => {
+                        if board
+                            .get_prefilled_positions()
+                            .contains_key(&Position::new(i.0, j.0))
+                        {
+                            let mut val = v.to_string().bold();
+                            if highlighted.is_some() {
+                                if j.1.0.unwrap() == highlighted.unwrap() {
+                                    val = v.to_string().on_bright_yellow().green().bold();
+                                }
+                            }
+
+                            board_str.push_str(&format!(" {} ", val));
+                        } else {
+                            let mut val = match j.1.1 {
+                                CellState::Hinted => v.to_string().magenta().bold(),
+                                CellState::Wrong => v.to_string().red().bold(),
+                                CellState::UserMarkedDefault => v.to_string().yellow().bold(),
+                                _ => v.to_string().green(),
+                            };
+
+                            if highlighted.is_some() {
+                                if j.1.0.unwrap() == highlighted.unwrap() {
+                                    if j.1.1 == CellState::Wrong {
+                                        val = val.on_bright_yellow().red().bold();
+                                    } else {
+                                        val = val.on_bright_yellow().green().bold();
+                                    }
+                                }
+                            }
+
+                            board_str.push_str(&format!(" {} ", val));
+                        }
+                    }
+                    None => {
+                        board_str.push_str("   ");
+                    }
+                }
+
+                if (j.0 + 1) % 3 == 0 {
+                    board_str.push_str(&format!("{}", "|".blue()));
+                }
+            }
+
+            board_str.push_str(&format!(
+                "        {}\n",
+                instructions.pop().unwrap_or_default()
+            ));
+
+            if (i.0 + 1) % 3 == 0 {
+                board_str.push_str(&format!(
+                    "{}         {}\n",
+                    "   -----------------------------".blue(),
+                    instructions.pop().unwrap_or_default()
+                ));
+            }
+        }
+
+        println!("{board_str}");
 
         match message {
             None => println!("\n"),
@@ -344,5 +415,59 @@ impl Game {
         };
 
         self._r();
+    }
+}
+
+impl Game {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_instructions() -> Vec<String> {
+        let mut instructions = vec![];
+
+        instructions.push(format!(""));
+        instructions.push("Following commands are the way to interact with the board,".into());
+        instructions.push("".into());
+        instructions.push(format!(
+            "{}: g007 (7 is the guess, 0 and 0 indicate x and y coordinates)",
+            "Guess".bold()
+        ));
+        instructions.push(format!(
+            "{}: o23 (2 and 3 indicate x and y coordinates)",
+            "RemoveGuess".bold()
+        ));
+        instructions.push(format!(
+            "{}: t | {}: h07 (0 and 7 indicate x and y coordinates)",
+            "Time elapsed".bold(),
+            "Hint".bold()
+        ));
+        instructions.push(format!(
+            "{}: k | {}: u | {}: r | {}: i<n> (i followed by a valid number)",
+            "Give up".bold(),
+            "Undo".bold(),
+            "Redo".bold(),
+            "Highlight".bold()
+        ));
+        instructions.push(format!(
+            "{}: s<n> (n could be 1 (Empty) or 2 (Filled) or 3 (Thonky Sudoku))",
+            "Share".bold()
+        ));
+        instructions.push(format!(
+            "{}: y | {}: z | {}: x",
+            "Reset".bold(),
+            "Hard Reset".bold(),
+            "Exit".bold()
+        ));
+        instructions.push(format!(""));
+        instructions.push(format!(
+            "{}: {}",
+            "Designed and developed by".italic(),
+            "DOES IT MATTER?".italic()
+        ));
+
+        instructions.reverse();
+
+        instructions
     }
 }

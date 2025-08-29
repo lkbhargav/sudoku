@@ -16,7 +16,7 @@ use std::{
 };
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Hash)]
-enum CellState {
+pub enum CellState {
     Normal,
     UserMarkedDefault,
     Wrong,
@@ -191,365 +191,16 @@ impl Display for Sudoku {
 impl Sudoku {
     const TOTAL_POSITIONS: usize = 81;
 
-    fn random_board(
-        number_of_clues: &u8,
-        conditonal_run_info: Option<RandomBoardsRequestArgs>,
-    ) -> Option<Self> {
-        let mut rng = rand::rng();
-
-        'outer: loop {
-            let mut grid: Board = [[(None, CellState::Normal); 9]; 9];
-
-            let mut blocks: [u16; 9] = [0; 9];
-            let mut rows: [u16; 9] = [0; 9];
-            let mut columns: [u16; 9] = [0; 9];
-
-            if let Some(cri) = conditonal_run_info.clone() {
-                if cri.number_of_found_counter.load(Ordering::Relaxed) >= cri.number_of_puzzles {
-                    return None;
-                }
-            };
-
-            for i in 0..9 {
-                for j in 0..9 {
-                    let bid = Sudoku::get_block_id(i, j);
-                    let mut counter = 0;
-
-                    loop {
-                        let val = rng.random_range(1..=9) as u8;
-
-                        if (blocks[bid] & (1 << val)) != 0
-                            || (rows[i] & (1 << val)) != 0
-                            || (columns[j] & (1 << val)) != 0
-                        {
-                            counter += 1;
-                            if counter >= 20 {
-                                continue 'outer;
-                            }
-
-                            continue;
-                        }
-
-                        grid[i][j].0 = Some(val);
-                        blocks[bid] |= 1 << val;
-                        rows[i] |= 1 << val;
-                        columns[j] |= 1 << val;
-
-                        break;
-                    }
-                }
-            }
-
-            let mut number_of_removals = 81 - number_of_clues;
-
-            while number_of_removals > 0 {
-                let x = rng.random_range(0..9);
-                let y = rng.random_range(0..9);
-
-                if grid[x][y].0 != None {
-                    grid[x][y].0 = None;
-                    number_of_removals -= 1;
-                }
-            }
-
-            if let Some(cri) = conditonal_run_info.clone() {
-                if !cri.completed_set.insert(Sudoku::get_diet_board(&grid)) {
-                    continue;
-                }
-            };
-
-            let mut prefilled_positions = HashMap::new();
-
-            let mut blocks = [0; 9];
-            let mut columns = [0; 9];
-            let mut rows = [0; 9];
-
-            for i in grid.iter().enumerate() {
-                for j in i.1.iter().enumerate() {
-                    if j.1.0.is_some() {
-                        let val = j.1.0.unwrap();
-                        prefilled_positions.insert(Position::new(i.0, j.0), val);
-
-                        if Sudoku::check_for_conflict(
-                            &[
-                                (&blocks, Sudoku::get_block_id(i.0, j.0)),
-                                (&rows, i.0),
-                                (&columns, j.0),
-                            ],
-                            val,
-                        ) {
-                            continue 'outer;
-                        }
-
-                        Sudoku::insert_into_bitmap(&mut rows, i.0, val);
-                        Sudoku::insert_into_bitmap(&mut columns, j.0, val);
-                        Sudoku::insert_into_bitmap(
-                            &mut blocks,
-                            Sudoku::get_block_id(i.0, j.0),
-                            val,
-                        );
-                    }
-                }
-            }
-
-            // println!("{:?}", rows);
-            // println!("{:?}", columns);
-            // println!("{:?}", blocks);
-
-            let mut board = Self {
-                grid: grid.clone(),
-                prefilled_positions,
-                solved_grid: grid,
-                highlighted: None,
-                rows,
-                columns,
-                blocks,
-            };
-
-            // println!("{board}");
-            // println!("\n{}\n{}\n\n", board.to_thonky_str(), board.to_str());
-
-            // println!("board.is_puzzle_valid(): {}", board.is_puzzle_valid());
-
-            if let Some(cri) = conditonal_run_info.clone() {
-                cri.total_number_of_puzzles_searched
-                    .fetch_add(1, Ordering::Relaxed);
-            };
-
-            if board.solve() {
-                board.reset();
-                return Some(board);
-            }
-
-            if let Some(cri) = conditonal_run_info.clone() {
-                cri.tx
-                    .send((None, Duration::ZERO))
-                    .expect("error send data on thread");
-            };
-        }
+    pub fn get_grid(&self) -> Board {
+        self.grid
     }
 
-    pub fn generate_random_board(number_of_clues: u8) -> Option<Self> {
-        let number_of_clues = number_of_clues.clamp(10, 80);
-        Sudoku::random_board(&number_of_clues, None)
+    pub fn get_prefilled_positions(&self) -> HashMap<Position, u8> {
+        self.prefilled_positions.clone()
     }
 
-    pub fn generate_random_boards(
-        number_of_clues: u8,
-        number_of_puzzles: usize,
-    ) -> (Vec<Self>, usize) {
-        let number_of_clues = number_of_clues.clamp(10, 80);
-
-        let num_threads = std::cmp::max(1, num_cpus::get() - 1);
-
-        let mut boards = vec![];
-        let mut handlers = vec![];
-        let found_counter = Arc::new(AtomicUsize::new(0));
-        let total_seen_counter = Arc::new(AtomicUsize::new(0));
-
-        let dashset: Arc<DashSet<DietBoard>> = Arc::new(DashSet::new());
-
-        let (tx, rx) = mpsc::channel::<(Option<Sudoku>, Duration)>();
-
-        for _ in 0..num_threads {
-            let tx_clone = tx.clone();
-            let found_counter_clone = found_counter.clone();
-            let total_seen_counter_clone = total_seen_counter.clone();
-            let dashset_clone = dashset.clone();
-
-            handlers.push(thread::spawn(move || {
-                loop {
-                    let now = Instant::now();
-
-                    let board = Sudoku::random_board(
-                        &number_of_clues,
-                        Some(RandomBoardsRequestArgs {
-                            number_of_puzzles: number_of_puzzles,
-                            number_of_found_counter: found_counter_clone.clone(),
-                            total_number_of_puzzles_searched: total_seen_counter_clone.clone(),
-                            completed_set: dashset_clone.clone(),
-                            tx: tx_clone.clone(),
-                        }),
-                    );
-
-                    tx_clone
-                        .send((board, now.elapsed()))
-                        .expect("error sending on channel");
-
-                    if found_counter_clone.load(Ordering::Relaxed) >= number_of_puzzles as usize {
-                        drop(tx_clone);
-                        break;
-                    }
-                }
-            }));
-        }
-
-        drop(tx);
-
-        for m in rx {
-            match m.0 {
-                None => (),
-                Some(b) => {
-                    boards.push(b);
-                    found_counter.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-
-            print!(
-                "\rProgress: {}/{}                   ",
-                found_counter.load(Ordering::Relaxed),
-                total_seen_counter.load(Ordering::Relaxed)
-            );
-            io::stdout().flush().unwrap();
-        }
-
-        for handler in handlers {
-            handler.join().expect("error join the thread handler");
-        }
-
-        (boards, num_threads)
-    }
-
-    #[inline]
-    fn get_diet_board(board: &Board) -> DietBoard {
-        let mut v: DietBoard = [0; 81];
-        let mut counter = 0;
-
-        for i in board {
-            for j in i {
-                match j.0 {
-                    None => (),
-                    Some(k) => v[counter] = k,
-                }
-
-                counter += 1;
-            }
-        }
-
-        v
-    }
-
-    pub fn from_str(inp: &str) -> Result<Self, Box<dyn Error>> {
-        let split = inp.split(",");
-
-        let split_cells = split.collect::<Vec<&str>>();
-
-        let cell_count = split_cells.len();
-
-        if cell_count != Sudoku::TOTAL_POSITIONS {
-            return Err(format!(
-                "invalid input found, expected {} cells, found {}",
-                Sudoku::TOTAL_POSITIONS,
-                cell_count
-            )
-            .into());
-        }
-
-        let mut prefilled_positions = HashMap::new();
-
-        let mut list: Vec<(Option<u8>, CellState)> = vec![];
-
-        for sc in split_cells.iter().enumerate() {
-            let mut v = sc.1.trim().to_string();
-
-            if v.is_empty() {
-                list.push((None, CellState::Normal));
-                continue;
-            }
-
-            let mut is_user_defined = false;
-
-            // user input number, would be in the form of u7, basically prefixed with a u
-            if v.len() == 2 {
-                let c = v.to_lowercase().chars().collect::<Vec<char>>();
-
-                if c[0] != 'u' {
-                    return Err(
-                        "expected first char to be `u` for user input but found otherwise".into(),
-                    );
-                }
-
-                is_user_defined = true;
-
-                v = c[1].to_string();
-            }
-
-            let val = v.parse::<u8>();
-
-            if val.is_err() {
-                list.push((None, CellState::Normal));
-                continue;
-            }
-
-            let val = val.unwrap();
-
-            if val < 1 || val > 9 {
-                return Err(
-                    "input values cannot contain values less than 1 or greater than 9".into(),
-                );
-            }
-
-            if !is_user_defined {
-                prefilled_positions.insert(Position::new(sc.0 / 9, sc.0 % 9), val);
-            }
-
-            if is_user_defined {
-                list.push((Some(val), CellState::UserMarkedDefault));
-            } else {
-                list.push((Some(val), CellState::Normal));
-            }
-        }
-
-        let mut blocks = [0; 9];
-        let mut columns = [0; 9];
-        let mut rows = [0; 9];
-
-        let res: Board = list
-            .chunks(9)
-            .map(|chunk| chunk.try_into().expect("error chunking the input given"))
-            .collect::<Vec<_>>()
-            .try_into()
-            .expect("given board is not of valid lengths");
-
-        for i in res.iter().enumerate() {
-            for j in i.1.iter().enumerate() {
-                if j.1.0.is_some() {
-                    let val = j.1.0.unwrap();
-
-                    if Sudoku::check_for_conflict(
-                        &[
-                            (&blocks, Sudoku::get_block_id(i.0, j.0)),
-                            (&rows, i.0),
-                            (&columns, j.0),
-                        ],
-                        val,
-                    ) {
-                        return Err("duplicate value found in row block or column".into());
-                    }
-
-                    Sudoku::insert_into_bitmap(&mut rows, i.0, val);
-                    Sudoku::insert_into_bitmap(&mut columns, j.0, val);
-                    Sudoku::insert_into_bitmap(&mut blocks, Sudoku::get_block_id(i.0, j.0), val);
-                }
-            }
-        }
-
-        let mut sudoku = Sudoku {
-            grid: res.clone(),
-            prefilled_positions,
-            solved_grid: res,
-            highlighted: None,
-            blocks,
-            rows,
-            columns,
-        };
-
-        if sudoku.solve() {
-            sudoku.reset();
-            return Ok(sudoku);
-        }
-
-        Err("invalid board given".into())
+    pub fn get_highlighted(&self) -> Option<u8> {
+        self.highlighted
     }
 
     pub fn to_thonky_str(&self) -> String {
@@ -648,15 +299,6 @@ impl Sudoku {
         Ok(())
     }
 
-    /// returns true if there is a conflict
-    fn check_for_conflict(maps: &[(&[u16; 9], usize); 3], v: u8) -> bool {
-        maps.iter().any(|(m, i)| (m[*i] & (1u16 << v)) != 0)
-    }
-
-    fn insert_into_bitmap(map: &mut [u16; 9], idx: usize, v: u8) {
-        map[idx] |= 1 << v;
-    }
-
     #[inline(always)]
     fn insert(
         &mut self,
@@ -738,10 +380,6 @@ impl Sudoku {
         } else {
             self.highlighted = val;
         }
-    }
-
-    fn get(&self, pos: &Position) -> Option<u8> {
-        self.grid[pos.x][pos.y].0
     }
 
     pub fn fetch_next_empty_cell(&self) -> Option<Position> {
@@ -910,145 +548,379 @@ impl Sudoku {
     }
 }
 
-#[cfg(test)]
-mod test {
-    use crate::{sudoku::Position, sudoku::Sudoku};
+impl Sudoku {
+    pub fn generate_random_board(number_of_clues: u8) -> Option<Self> {
+        let number_of_clues = number_of_clues.clamp(10, 80);
+        Sudoku::random_board(&number_of_clues, None)
+    }
 
-    // #[test]
-    // pub fn simple_test() {
-    //     let str_val = "8,2,,,,,,,,,,4,,,,,,,,,1,,,,,,,,,,,,,9,,,,,,,,,,,,6,,,,,,,,,3,,,,,,7,,,,,,,,,,,,,,,,5,,,,";
+    pub fn generate_random_boards(
+        number_of_clues: u8,
+        number_of_puzzles: usize,
+    ) -> (Vec<Self>, usize) {
+        let number_of_clues = number_of_clues.clamp(10, 80);
 
-    //     let board = Sudoku::from_str(str_val);
+        let num_threads = std::cmp::max(1, num_cpus::get().saturating_sub(1));
+        // let num_threads = 1;
 
-    //     assert!(board.is_ok());
+        let mut boards = vec![];
+        let mut handlers = vec![];
+        let found_counter = Arc::new(AtomicUsize::new(0));
+        let total_seen_counter = Arc::new(AtomicUsize::new(0));
 
-    //     let mut board = board.expect("didn't expect an error");
+        let dashset: Arc<DashSet<DietBoard>> = Arc::new(DashSet::new());
 
-    //     println!("{}", board);
+        let (tx, rx) = mpsc::channel::<(Option<Sudoku>, Duration)>();
 
-    //     assert_eq!(board.prefilled_positions.len(), 9);
+        for _ in 0..num_threads {
+            let tx_clone = tx.clone();
+            let found_counter_clone = found_counter.clone();
+            let total_seen_counter_clone = total_seen_counter.clone();
+            let dashset_clone = dashset.clone();
 
-    //     for pos in vec![
-    //         Position::new(0, 0),
-    //         Position::new(1, 2),
-    //         Position::new(2, 2),
-    //         Position::new(5, 0),
-    //         Position::new(6, 6),
-    //         Position::new(8, 4),
-    //     ] {
-    //         assert!(board.prefilled_positions.contains_key(&pos));
-    //     }
+            handlers.push(thread::spawn(move || {
+                loop {
+                    let now = Instant::now();
 
-    //     assert!(!board.prefilled_positions.contains_key(&Position::new(1, 5)));
-    //     assert!(!board.prefilled_positions.contains_key(&Position::new(5, 8)));
+                    let board = Sudoku::random_board(
+                        &number_of_clues,
+                        Some(RandomBoardsRequestArgs {
+                            number_of_puzzles: number_of_puzzles,
+                            number_of_found_counter: found_counter_clone.clone(),
+                            total_number_of_puzzles_searched: total_seen_counter_clone.clone(),
+                            completed_set: dashset_clone.clone(),
+                            tx: tx_clone.clone(),
+                        }),
+                    );
 
-    //     assert!(board.is_board_valid());
+                    tx_clone
+                        .send((board, now.elapsed()))
+                        .expect("error sending on channel");
 
-    //     assert!(!board.is_puzzle_valid());
-    // }
+                    if found_counter_clone.load(Ordering::Relaxed) >= number_of_puzzles as usize {
+                        drop(tx_clone);
+                        break;
+                    }
+                }
+            }));
+        }
 
-    // #[test]
-    // pub fn invalid_block() {
-    //     let str_val = "8,2,8,,,,,,,,,4,,,,,,,,,1,,,,,,,,,,,,,9,,,,,,,,,,,,6,,,,,,,,,3,,,,,,7,,,,,,,,,,,,,,,,5,,,,";
+        drop(tx);
 
-    //     let board = Sudoku::from_str(str_val);
+        for m in rx {
+            match m.0 {
+                None => (),
+                Some(b) => {
+                    boards.push(b);
+                    found_counter.fetch_add(1, Ordering::Relaxed);
+                }
+            }
 
-    //     assert!(board.is_ok());
+            print!(
+                "\rProgress: {}/{}                   ",
+                found_counter.load(Ordering::Relaxed),
+                total_seen_counter.load(Ordering::Relaxed)
+            );
+            io::stdout().flush().unwrap();
+        }
 
-    //     let board = board.expect("didn't expect an error");
+        for handler in handlers {
+            handler.join().expect("error join the thread handler");
+        }
 
-    //     assert_eq!(board.prefilled_positions.len(), 10);
-    //     assert!(board.prefilled_positions.contains_key(&Position::new(0, 0)));
-    //     assert!(board.prefilled_positions.contains_key(&Position::new(1, 2)));
-    //     assert!(!board.prefilled_positions.contains_key(&Position::new(1, 5)));
+        (boards, num_threads)
+    }
 
-    //     assert!(!board.is_board_valid());
-    //     assert!(Sudoku::is_present_in_block(
-    //         &board.grid,
-    //         &Position::new(0, 2),
-    //         8
-    //     ));
-    // }
+    pub fn from_str(inp: &str) -> Result<Self, Box<dyn Error>> {
+        let split = inp.split(",");
 
-    // #[test]
-    // pub fn invalid_row() {
-    //     let str_val = "8,2,,,,,,,,,,4,,,4,,,,,,1,,,,,,,,,,,,,9,,,,,,,,,,,,6,,,,,,,,,3,,,,,,7,,,,,,,,,,,,,,,,5,,,,";
+        let split_cells = split.collect::<Vec<&str>>();
 
-    //     let board = Sudoku::from_str(str_val);
+        let cell_count = split_cells.len();
 
-    //     assert!(board.is_ok());
+        if cell_count != Sudoku::TOTAL_POSITIONS {
+            return Err(format!(
+                "invalid input found, expected {} cells, found {}",
+                Sudoku::TOTAL_POSITIONS,
+                cell_count
+            )
+            .into());
+        }
 
-    //     let board = board.expect("didn't expect an error");
+        let mut prefilled_positions = HashMap::new();
 
-    //     assert_eq!(board.prefilled_positions.len(), 10);
-    //     assert!(board.prefilled_positions.contains_key(&Position::new(0, 0)));
-    //     assert!(board.prefilled_positions.contains_key(&Position::new(1, 2)));
-    //     assert!(!board.prefilled_positions.contains_key(&Position::new(1, 6)));
+        let mut list: Vec<(Option<u8>, CellState)> = vec![];
 
-    //     assert!(!board.is_board_valid());
-    //     assert!(Sudoku::is_present_in_row(
-    //         &board.grid,
-    //         &Position::new(1, 6),
-    //         4
-    //     ));
-    // }
+        for sc in split_cells.iter().enumerate() {
+            let mut v = sc.1.trim().to_string();
 
-    // #[test]
-    // pub fn invalid_column() {
-    //     let str_val = ",8,7,,5,,,,,4,9,7,,3,6,1,,,5,1,,9,8,2,,,4,,,,,,5,4,,6,7,,,,6,9,,1,,1,,,,4,,7,5,,2,,,8,1,3,6,,9,9,4,,,,7,,3,,,,,,,4,8,,7";
+            if v.is_empty() {
+                list.push((None, CellState::Normal));
+                continue;
+            }
 
-    //     let board = Sudoku::from_str(str_val);
+            let mut is_user_defined = false;
 
-    //     assert!(!board.is_ok());
+            // user input number, would be in the form of u7, basically prefixed with a u
+            if v.len() == 2 {
+                let c = v.to_lowercase().chars().collect::<Vec<char>>();
 
-    //     let board = board.expect("didn't expect an error");
+                if c[0] != 'u' {
+                    return Err(
+                        "expected first char to be `u` for user input but found otherwise".into(),
+                    );
+                }
 
-    //     println!("{board}");
+                is_user_defined = true;
 
-    //     assert!(!board.is_board_valid());
-    //     assert!(Sudoku::is_present_in_column(
-    //         &board.grid,
-    //         &Position::new(2, 5),
-    //         8
-    //     ));
+                v = c[1].to_string();
+            }
 
-    //     dbg!(board);
-    // }
+            let val = v.parse::<u8>();
 
-    // #[test]
-    // pub fn toughest_valid() {
-    //     let str_val = ",,,1,,2,,,,,6,,,,,,7,,,,8,,,,9,,,4,,,,,,,,3,,5,,,,7,,,,2,,,,8,,,,1,,,9,,,,8,,5,,7,,,,,,6,,,,,3,,4,,,";
+            if val.is_err() {
+                list.push((None, CellState::Normal));
+                continue;
+            }
 
-    //     let board = Sudoku::from_str(str_val);
+            let val = val.unwrap();
 
-    //     assert!(board.is_ok());
+            if val < 1 || val > 9 {
+                return Err(
+                    "input values cannot contain values less than 1 or greater than 9".into(),
+                );
+            }
 
-    //     let board = board.expect("didn't expect an error");
+            if !is_user_defined {
+                prefilled_positions.insert(Position::new(sc.0 / 9, sc.0 % 9), val);
+            }
 
-    //     assert_eq!(board.prefilled_positions.len(), 20);
-    //     assert!(board.prefilled_positions.contains_key(&Position::new(0, 3)));
-    //     assert!(board.prefilled_positions.contains_key(&Position::new(1, 1)));
-    //     assert!(!board.prefilled_positions.contains_key(&Position::new(2, 5)));
+            if is_user_defined {
+                list.push((Some(val), CellState::UserMarkedDefault));
+            } else {
+                list.push((Some(val), CellState::Normal));
+            }
+        }
 
-    //     assert!(board.is_board_valid());
-    // }
+        let mut blocks = [0; 9];
+        let mut columns = [0; 9];
+        let mut rows = [0; 9];
 
-    // #[test]
-    // pub fn extreme_26() {
-    //     let str_val = "1,,,,6,,,,,,,3,9,,1,,4,,2,,,,,,,,7,,,,,8,,,5,,,,6,,4,,,,,3,,,5,,6,2,,,,,1,3,,5,,9,,,,,8,,,,,,,9,,,,,4,,";
+        let res: Board = list
+            .chunks(9)
+            .map(|chunk| chunk.try_into().expect("error chunking the input given"))
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("given board is not of valid lengths");
 
-    //     let board = Sudoku::from_str(str_val);
+        for i in res.iter().enumerate() {
+            for j in i.1.iter().enumerate() {
+                if j.1.0.is_some() {
+                    let val = j.1.0.unwrap();
 
-    //     assert!(board.is_ok());
+                    if Sudoku::check_for_conflict(
+                        &[
+                            (&blocks, Sudoku::get_block_id(i.0, j.0)),
+                            (&rows, i.0),
+                            (&columns, j.0),
+                        ],
+                        val,
+                    ) {
+                        return Err("duplicate value found in row block or column".into());
+                    }
 
-    //     let mut board = board.expect("didn't expect an error");
+                    Sudoku::insert_into_bitmap(&mut rows, i.0, val);
+                    Sudoku::insert_into_bitmap(&mut columns, j.0, val);
+                    Sudoku::insert_into_bitmap(&mut blocks, Sudoku::get_block_id(i.0, j.0), val);
+                }
+            }
+        }
 
-    //     println!("{}", board);
+        let mut sudoku = Sudoku {
+            grid: res.clone(),
+            prefilled_positions,
+            solved_grid: res,
+            highlighted: None,
+            blocks,
+            rows,
+            columns,
+        };
 
-    //     assert_eq!(board.prefilled_positions.len(), 23);
+        if sudoku.solve() {
+            sudoku.reset();
+            return Ok(sudoku);
+        }
 
-    //     assert!(board.is_board_valid());
-    //     assert!(board.solve(None));
-    //     assert!(board.is_puzzle_valid());
-    // }
+        Err("invalid board given".into())
+    }
+
+    fn random_board(
+        number_of_clues: &u8,
+        conditonal_run_info: Option<RandomBoardsRequestArgs>,
+    ) -> Option<Self> {
+        let mut rng = rand::rng();
+
+        'outer: loop {
+            let mut grid: Board = [[(None, CellState::Normal); 9]; 9];
+
+            let mut blocks: [u16; 9] = [0; 9];
+            let mut rows: [u16; 9] = [0; 9];
+            let mut columns: [u16; 9] = [0; 9];
+
+            if let Some(cri) = conditonal_run_info.clone() {
+                if cri.number_of_found_counter.load(Ordering::Relaxed) >= cri.number_of_puzzles {
+                    return None;
+                }
+            };
+
+            for i in 0..9 {
+                for j in 0..9 {
+                    let bid = Sudoku::get_block_id(i, j);
+                    let mut counter = 0;
+
+                    loop {
+                        let val = rng.random_range(1..=9) as u8;
+
+                        if (blocks[bid] & (1 << val)) != 0
+                            || (rows[i] & (1 << val)) != 0
+                            || (columns[j] & (1 << val)) != 0
+                        {
+                            counter += 1;
+                            if counter >= 20 {
+                                continue 'outer;
+                            }
+
+                            continue;
+                        }
+
+                        grid[i][j].0 = Some(val);
+                        blocks[bid] |= 1 << val;
+                        rows[i] |= 1 << val;
+                        columns[j] |= 1 << val;
+
+                        break;
+                    }
+                }
+            }
+
+            let mut number_of_removals = 81 - number_of_clues;
+
+            while number_of_removals > 0 {
+                let x = rng.random_range(0..9);
+                let y = rng.random_range(0..9);
+
+                if grid[x][y].0 != None {
+                    grid[x][y].0 = None;
+                    number_of_removals -= 1;
+                }
+            }
+
+            if let Some(cri) = conditonal_run_info.clone() {
+                if !cri.completed_set.insert(Sudoku::get_diet_board(&grid)) {
+                    continue;
+                }
+            };
+
+            let mut prefilled_positions = HashMap::new();
+
+            let mut blocks = [0; 9];
+            let mut columns = [0; 9];
+            let mut rows = [0; 9];
+
+            for i in grid.iter().enumerate() {
+                for j in i.1.iter().enumerate() {
+                    if j.1.0.is_some() {
+                        let val = j.1.0.unwrap();
+                        prefilled_positions.insert(Position::new(i.0, j.0), val);
+
+                        if Sudoku::check_for_conflict(
+                            &[
+                                (&blocks, Sudoku::get_block_id(i.0, j.0)),
+                                (&rows, i.0),
+                                (&columns, j.0),
+                            ],
+                            val,
+                        ) {
+                            continue 'outer;
+                        }
+
+                        Sudoku::insert_into_bitmap(&mut rows, i.0, val);
+                        Sudoku::insert_into_bitmap(&mut columns, j.0, val);
+                        Sudoku::insert_into_bitmap(
+                            &mut blocks,
+                            Sudoku::get_block_id(i.0, j.0),
+                            val,
+                        );
+                    }
+                }
+            }
+
+            // println!("{:?}", rows);
+            // println!("{:?}", columns);
+            // println!("{:?}", blocks);
+
+            let mut board = Self {
+                grid: grid.clone(),
+                prefilled_positions,
+                solved_grid: grid,
+                highlighted: None,
+                rows,
+                columns,
+                blocks,
+            };
+
+            // println!("{board}");
+            // println!("\n{}\n{}\n\n", board.to_thonky_str(), board.to_str());
+
+            // println!("board.is_puzzle_valid(): {}", board.is_puzzle_valid());
+
+            if let Some(cri) = conditonal_run_info.clone() {
+                cri.total_number_of_puzzles_searched
+                    .fetch_add(1, Ordering::Relaxed);
+            };
+
+            if board.solve() {
+                board.reset();
+                return Some(board);
+            }
+
+            if let Some(cri) = conditonal_run_info.clone() {
+                cri.tx
+                    .send((None, Duration::ZERO))
+                    .expect("error send data on thread");
+            };
+        }
+    }
+
+    #[inline]
+    fn get_diet_board(board: &Board) -> DietBoard {
+        let mut v: DietBoard = [0; 81];
+        let mut counter = 0;
+
+        for i in board {
+            for j in i {
+                match j.0 {
+                    None => (),
+                    Some(k) => v[counter] = k,
+                }
+
+                counter += 1;
+            }
+        }
+
+        v
+    }
+
+    /// returns true if there is a conflict
+    fn check_for_conflict(maps: &[(&[u16; 9], usize); 3], v: u8) -> bool {
+        maps.iter().any(|(m, i)| (m[*i] & (1u16 << v)) != 0)
+    }
+
+    fn insert_into_bitmap(map: &mut [u16; 9], idx: usize, v: u8) {
+        map[idx] |= 1 << v;
+    }
+
+    fn get(&self, pos: &Position) -> Option<u8> {
+        self.grid[pos.x][pos.y].0
+    }
 }
