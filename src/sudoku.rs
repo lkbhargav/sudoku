@@ -1,5 +1,5 @@
 use colored::Colorize;
-use dashmap::DashMap;
+use dashmap::DashSet;
 use rand::Rng;
 use std::{
     collections::HashMap,
@@ -9,7 +9,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
-        mpsc,
+        mpsc::{self, Sender},
     },
     thread,
     time::{Duration, Instant},
@@ -40,6 +40,7 @@ enum UpdateMapsType {
 }
 
 type Board = [[(Option<u8>, CellState); 9]; 9];
+type DietBoard = [u8; 81];
 
 #[derive(PartialEq, Eq, Debug, Hash, Clone)]
 pub struct Position {
@@ -100,7 +101,8 @@ struct RandomBoardsRequestArgs {
     number_of_puzzles: usize,
     number_of_found_counter: Arc<AtomicUsize>,
     total_number_of_puzzles_searched: Arc<AtomicUsize>,
-    completed_map: Arc<DashMap<Board, bool>>,
+    completed_set: Arc<DashSet<DietBoard>>,
+    tx: Sender<(Option<Sudoku>, Duration)>,
 }
 
 #[derive(Debug)]
@@ -251,7 +253,7 @@ impl Sudoku {
             }
 
             if let Some(cri) = conditonal_run_info.clone() {
-                if cri.completed_map.insert(grid, true).is_some() {
+                if !cri.completed_set.insert(Sudoku::get_diet_board(&grid)) {
                     continue;
                 }
             };
@@ -269,7 +271,7 @@ impl Sudoku {
                         prefilled_positions.insert(Position::new(i.0, j.0), val);
 
                         if Sudoku::check_for_conflict(
-                            vec![
+                            &[
                                 (&blocks, Sudoku::get_block_id(i.0, j.0)),
                                 (&rows, i.0),
                                 (&columns, j.0),
@@ -320,25 +322,15 @@ impl Sudoku {
             }
 
             if let Some(cri) = conditonal_run_info.clone() {
-                print!(
-                    "\rProgress: {}/{}                   ",
-                    cri.number_of_found_counter.load(Ordering::Relaxed),
-                    cri.total_number_of_puzzles_searched.load(Ordering::Relaxed)
-                );
-                io::stdout().flush().unwrap();
+                cri.tx
+                    .send((None, Duration::ZERO))
+                    .expect("error send data on thread");
             };
         }
     }
 
     pub fn generate_random_board(number_of_clues: u8) -> Option<Self> {
-        let mut number_of_clues = number_of_clues;
-
-        if number_of_clues < 10 {
-            number_of_clues = 10;
-        } else if number_of_clues > 80 {
-            number_of_clues = 80;
-        }
-
+        let number_of_clues = number_of_clues.clamp(10, 80);
         Sudoku::random_board(&number_of_clues, None)
     }
 
@@ -346,22 +338,24 @@ impl Sudoku {
         number_of_clues: u8,
         number_of_puzzles: usize,
     ) -> (Vec<Self>, usize) {
-        let num_threads = num_cpus::get() - 1;
+        let number_of_clues = number_of_clues.clamp(10, 80);
+
+        let num_threads = std::cmp::max(1, num_cpus::get() - 1);
 
         let mut boards = vec![];
         let mut handlers = vec![];
         let found_counter = Arc::new(AtomicUsize::new(0));
         let total_seen_counter = Arc::new(AtomicUsize::new(0));
 
-        let dashmap: Arc<DashMap<Board, bool>> = Arc::new(DashMap::new());
+        let dashset: Arc<DashSet<DietBoard>> = Arc::new(DashSet::new());
 
-        let (tx, rx) = mpsc::channel::<(Sudoku, Duration)>();
+        let (tx, rx) = mpsc::channel::<(Option<Sudoku>, Duration)>();
 
         for _ in 0..num_threads {
             let tx_clone = tx.clone();
             let found_counter_clone = found_counter.clone();
             let total_seen_counter_clone = total_seen_counter.clone();
-            let dashmap_clone = dashmap.clone();
+            let dashset_clone = dashset.clone();
 
             handlers.push(thread::spawn(move || {
                 loop {
@@ -373,24 +367,14 @@ impl Sudoku {
                             number_of_puzzles: number_of_puzzles,
                             number_of_found_counter: found_counter_clone.clone(),
                             total_number_of_puzzles_searched: total_seen_counter_clone.clone(),
-                            completed_map: dashmap_clone.clone(),
+                            completed_set: dashset_clone.clone(),
+                            tx: tx_clone.clone(),
                         }),
                     );
 
-                    if let Some(b) = board {
-                        tx_clone
-                            .send((b, now.elapsed()))
-                            .expect("error sending on channel");
-
-                        found_counter_clone.fetch_add(1, Ordering::Relaxed);
-                    };
-
-                    print!(
-                        "\rProgress: {}/{}                   ",
-                        found_counter_clone.load(Ordering::Relaxed),
-                        total_seen_counter_clone.load(Ordering::Relaxed)
-                    );
-                    io::stdout().flush().unwrap();
+                    tx_clone
+                        .send((board, now.elapsed()))
+                        .expect("error sending on channel");
 
                     if found_counter_clone.load(Ordering::Relaxed) >= number_of_puzzles as usize {
                         drop(tx_clone);
@@ -403,7 +387,20 @@ impl Sudoku {
         drop(tx);
 
         for m in rx {
-            boards.push(m.0);
+            match m.0 {
+                None => (),
+                Some(b) => {
+                    boards.push(b);
+                    found_counter.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+
+            print!(
+                "\rProgress: {}/{}                   ",
+                found_counter.load(Ordering::Relaxed),
+                total_seen_counter.load(Ordering::Relaxed)
+            );
+            io::stdout().flush().unwrap();
         }
 
         for handler in handlers {
@@ -411,6 +408,25 @@ impl Sudoku {
         }
 
         (boards, num_threads)
+    }
+
+    #[inline]
+    fn get_diet_board(board: &Board) -> DietBoard {
+        let mut v: DietBoard = [0; 81];
+        let mut counter = 0;
+
+        for i in board {
+            for j in i {
+                match j.0 {
+                    None => (),
+                    Some(k) => v[counter] = k,
+                }
+
+                counter += 1;
+            }
+        }
+
+        v
     }
 
     pub fn from_str(inp: &str) -> Result<Self, Box<dyn Error>> {
@@ -501,7 +517,7 @@ impl Sudoku {
                     let val = j.1.0.unwrap();
 
                     if Sudoku::check_for_conflict(
-                        vec![
+                        &[
                             (&blocks, Sudoku::get_block_id(i.0, j.0)),
                             (&rows, i.0),
                             (&columns, j.0),
@@ -613,7 +629,7 @@ impl Sudoku {
             }
             UpdateMapsType::Add => {
                 if Sudoku::check_for_conflict(
-                    vec![
+                    &[
                         (&self.blocks, bid),
                         (&self.rows, pos.x),
                         (&self.columns, pos.y),
@@ -633,14 +649,8 @@ impl Sudoku {
     }
 
     /// returns true if there is a conflict
-    fn check_for_conflict(maps: Vec<(&[u16; 9], usize)>, v: u8) -> bool {
-        for m in maps {
-            if (m.0[m.1] & (1 << v)) != 0 {
-                return true;
-            }
-        }
-
-        return false;
+    fn check_for_conflict(maps: &[(&[u16; 9], usize); 3], v: u8) -> bool {
+        maps.iter().any(|(m, i)| (m[*i] & (1u16 << v)) != 0)
     }
 
     fn insert_into_bitmap(map: &mut [u16; 9], idx: usize, v: u8) {
