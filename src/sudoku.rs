@@ -251,10 +251,8 @@ impl Sudoku {
             }
 
             if let Some(cri) = conditonal_run_info.clone() {
-                if cri.completed_map.contains_key(&grid) {
+                if cri.completed_map.insert(grid, true).is_some() {
                     continue;
-                } else {
-                    cri.completed_map.insert(grid, true);
                 }
             };
 
@@ -329,9 +327,6 @@ impl Sudoku {
                 );
                 io::stdout().flush().unwrap();
             };
-
-            // print!(".");
-            // io::stdout().flush().expect("Failed to flush stdout");
         }
     }
 
