@@ -53,6 +53,7 @@ impl<'a> Message<'a> {
 #[derive(Debug)]
 pub enum UserRequest {
     Guess(Position, u8),
+    RemoveGuess(Position),
     Undo,
     Redo,
     Reset,
@@ -93,30 +94,12 @@ impl UserRequest {
                     return Err("invalid guess made, please try again".into());
                 }
 
-                let x = match chars[1].to_digit(10) {
-                    Some(v) => v as usize,
-                    None => {
-                        return Err("expected a digit between 1 and 9 inclusive but found something else (first digit)".into());
-                    }
-                };
-
-                let y = match chars[2].to_digit(10) {
-                    Some(v) => v as usize,
-                    None => {
-                        return Err("expected a digit between 1 and 9 inclusive but found something else (second digit)".into());
-                    }
-                };
-
                 let val = match chars[3].to_digit(10) {
                     Some(v) => v as u8,
                     None => {
                         return Err("expected a digit between 1 and 9 inclusive but found something else (value digit)".into());
                     }
                 };
-
-                if x > 8 || y > 8 {
-                    return Err("co-ordinates are not in range, make sure it is in between 0 and 8 inclusive".into());
-                }
 
                 if val < 1 || val > 9 {
                     return Err(
@@ -125,32 +108,14 @@ impl UserRequest {
                     );
                 }
 
-                return Ok(Self::Guess(Position::new(x, y), val));
+                return Ok(Self::Guess(UserRequest::parse_position(&chars)?, val));
             }
             'h' => {
                 if !UserRequest::validate_len(&chars, 2) {
                     return Err("invalid hint requested, please try again".into());
                 }
 
-                let x = match chars[1].to_digit(10) {
-                    Some(v) => v as usize,
-                    None => {
-                        return Err("expected a digit between 1 and 9 inclusive but found something else (first digit)".into());
-                    }
-                };
-
-                let y = match chars[2].to_digit(10) {
-                    Some(v) => v as usize,
-                    None => {
-                        return Err("expected a digit between 1 and 9 inclusive but found something else (second digit)".into());
-                    }
-                };
-
-                if x > 8 || y > 8 {
-                    return Err("co-ordinates are not in range, make sure it is in between 0 and 8 inclusive".into());
-                }
-
-                return Ok(Self::Hint(Position::new(x, y)));
+                return Ok(Self::Hint(UserRequest::parse_position(&chars)?));
             }
             'i' => {
                 if !UserRequest::validate_len(&chars, 1) {
@@ -186,6 +151,13 @@ impl UserRequest {
                     }
                 })
             }
+            'o' => {
+                if !UserRequest::validate_len(&chars, 2) {
+                    return Err("expected position but found none, please try again".into());
+                }
+
+                return Ok(Self::RemoveGuess(UserRequest::parse_position(&chars)?));
+            }
             't' => return Ok(Self::TimeElapsed),
             'u' => return Ok(Self::Undo),
             'r' => return Ok(Self::Redo),
@@ -197,5 +169,30 @@ impl UserRequest {
                 return Err("Unknown option, please try again".into());
             }
         }
+    }
+
+    fn parse_position(c: &[char]) -> Result<Position, Box<dyn Error>> {
+        let x = match c[1].to_digit(10) {
+            Some(v) => v as usize,
+            None => {
+                return Err("expected a digit between 1 and 9 inclusive but found something else (first digit)".into());
+            }
+        };
+
+        let y = match c[2].to_digit(10) {
+            Some(v) => v as usize,
+            None => {
+                return Err("expected a digit between 1 and 9 inclusive but found something else (second digit)".into());
+            }
+        };
+
+        if x > 8 || y > 8 {
+            return Err(
+                "co-ordinates are not in range, make sure it is in between 0 and 8 inclusive"
+                    .into(),
+            );
+        }
+
+        Ok(Position::new(x, y))
     }
 }

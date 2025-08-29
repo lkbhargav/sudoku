@@ -697,16 +697,16 @@ impl Sudoku {
                 cell_state = CellState::Wrong;
                 resp = InsertStatus::Wrong;
             }
+
+            if self.highlighted.is_some() {
+                if self.highlighted != val {
+                    self.highlight(val);
+                }
+            }
         }
 
         if self.insert(pos, val, cell_state).is_err() {
             return InsertStatus::ValuePresent;
-        }
-
-        if self.highlighted.is_some() {
-            if self.highlighted != val {
-                self.highlight(val);
-            }
         }
 
         resp

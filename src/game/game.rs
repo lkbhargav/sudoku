@@ -76,6 +76,9 @@ impl Game {
                         }
                     };
 
+                    // clears the board completely
+                    self.hard_reset();
+
                     let board = Sudoku::generate_random_board(clues);
 
                     self.set_board(board.unwrap());
@@ -179,12 +182,19 @@ impl Game {
                     match self.board.as_mut().unwrap().insert_at(&pos, Some(val)) {
                         InsertStatus::Wrong => self.mistakes += 1,
                         InsertStatus::ValuePresent =>
-                            message = Some(Message::new("Value is already present in the cell, try clearing the cell before inserting a new value or force insert".into(), MessageType::Warn)),
+                            message = Some(Message::new("Value is already present in the cell/block/row/column, try clearing the cell before inserting a new value or force insert".into(), MessageType::Warn)),
                         _ => (),
                     };
 
                     self.undo_buffer.push((pos.clone(), Some(val)));
                     self.redo_buffer.clear();
+                }
+                UserRequest::RemoveGuess(pos) => {
+                    match self.board.as_mut().unwrap().insert_at(&pos, None) {
+                        InsertStatus::ValuePresent =>
+                            message = Some(Message::new("Please check the position that you are trying to remove at. Maybe it's not filled to begin with".into(), MessageType::Warn)),
+                        _ => (),
+                    }
                 }
                 UserRequest::Undo => {
                     if self.undo_buffer.is_empty() {
