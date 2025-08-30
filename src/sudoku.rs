@@ -568,8 +568,9 @@ impl Sudoku {
     ) -> (Vec<Self>, usize) {
         let number_of_clues = number_of_clues.clamp(10, 80);
 
-        let num_threads = std::cmp::max(1, num_cpus::get().saturating_sub(1));
+        // let num_threads = std::cmp::max(1, num_cpus::get().saturating_sub(1));
         // let num_threads = 1;
+        let num_threads = num_cpus::get();
 
         let mut file_number = 0;
 
