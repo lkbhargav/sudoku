@@ -5,7 +5,9 @@ use std::{
     collections::HashMap,
     error::Error,
     fmt::Display,
-    io::{self, Write},
+    fs::{File, OpenOptions},
+    io::{self, BufRead, ErrorKind, Write},
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -14,6 +16,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+const MAX_NUMBER_OF_RECORDS_IN_A_FILE: usize = 25_000;
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Hash)]
 pub enum CellState {
@@ -102,10 +106,15 @@ struct RandomBoardsRequestArgs {
     number_of_found_counter: Arc<AtomicUsize>,
     total_number_of_puzzles_searched: Arc<AtomicUsize>,
     completed_set: Arc<DashSet<DietBoard>>,
-    tx: Sender<(Option<Sudoku>, Duration)>,
+    tx: Sender<DataTxPacket>,
 }
 
-#[derive(Debug)]
+enum DataTxPacket {
+    Valid(Sudoku, Duration),
+    Invalid(DietBoard),
+}
+
+#[derive(Debug, Clone)]
 pub struct Sudoku {
     grid: Board,
     prefilled_positions: HashMap<Position, u8>,
@@ -183,7 +192,6 @@ impl Display for Sudoku {
             }
         }
 
-        // f.write_fmt(format_args!("Board:\n{str}"))
         Ok(())
     }
 }
@@ -563,6 +571,8 @@ impl Sudoku {
         let num_threads = std::cmp::max(1, num_cpus::get().saturating_sub(1));
         // let num_threads = 1;
 
+        let mut file_number = 0;
+
         let mut boards = vec![];
         let mut handlers = vec![];
         let found_counter = Arc::new(AtomicUsize::new(0));
@@ -570,7 +580,44 @@ impl Sudoku {
 
         let dashset: Arc<DashSet<DietBoard>> = Arc::new(DashSet::new());
 
-        let (tx, rx) = mpsc::channel::<(Option<Sudoku>, Duration)>();
+        let mut invalid_inps = vec![];
+
+        // fetch data from files and feed the dashset with invalid records
+        loop {
+            match Sudoku::read_lines(
+                Sudoku::invalid_file_name(number_of_clues, file_number),
+                |v| {
+                    dashset.insert(v);
+                },
+            ) {
+                Ok(v) => {
+                    if !v {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("error reading lines: {e}");
+                    return (vec![], 0);
+                }
+            }
+
+            file_number += 1;
+        }
+
+        // also add all the valid puzzles to the set
+        match Sudoku::read_lines(Sudoku::valid_file_name(number_of_clues), |v| {
+            dashset.insert(v);
+        }) {
+            Ok(_) => (),
+            Err(e) => {
+                eprintln!("error reading lines (valid puzzles): {e}");
+                return (vec![], 0);
+            }
+        }
+
+        total_seen_counter.store(dashset.len(), Ordering::Relaxed);
+
+        let (tx, rx) = mpsc::channel::<DataTxPacket>();
 
         for _ in 0..num_threads {
             let tx_clone = tx.clone();
@@ -580,9 +627,7 @@ impl Sudoku {
 
             handlers.push(thread::spawn(move || {
                 loop {
-                    let now = Instant::now();
-
-                    let board = Sudoku::random_board(
+                    Sudoku::random_board(
                         &number_of_clues,
                         Some(RandomBoardsRequestArgs {
                             number_of_puzzles: number_of_puzzles,
@@ -592,10 +637,6 @@ impl Sudoku {
                             tx: tx_clone.clone(),
                         }),
                     );
-
-                    tx_clone
-                        .send((board, now.elapsed()))
-                        .expect("error sending on channel");
 
                     if found_counter_clone.load(Ordering::Relaxed) >= number_of_puzzles as usize {
                         drop(tx_clone);
@@ -608,10 +649,29 @@ impl Sudoku {
         drop(tx);
 
         for m in rx {
-            match m.0 {
-                None => (),
-                Some(b) => {
+            match m {
+                DataTxPacket::Invalid(v) => {
+                    invalid_inps.push(v);
+                    if invalid_inps.len() >= MAX_NUMBER_OF_RECORDS_IN_A_FILE {
+                        match Sudoku::export_to_file(
+                            Sudoku::invalid_file_name(number_of_clues, file_number),
+                            &invalid_inps,
+                        ) {
+                            Ok(_) => file_number += 1,
+                            Err(e) => {
+                                eprintln!("Error dumping to file. Error: {e}");
+                                return (vec![], 0);
+                            }
+                        };
+                        invalid_inps = vec![];
+                    }
+                }
+                DataTxPacket::Valid(b, _) => {
+                    Sudoku::append_to_file(Sudoku::valid_file_name(number_of_clues), &b)
+                        .expect("error writting a valid puzzle to file");
+
                     boards.push(b);
+
                     found_counter.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -628,10 +688,29 @@ impl Sudoku {
             handler.join().expect("error join the thread handler");
         }
 
+        if invalid_inps.len() > 0 {
+            match Sudoku::export_to_file(
+                Sudoku::invalid_file_name(number_of_clues, file_number),
+                &invalid_inps,
+            ) {
+                Ok(_) => (),
+                Err(e) => {
+                    eprintln!("Error dumping to file. Error: {e}");
+                    return (vec![], 0);
+                }
+            };
+        }
+
         (boards, num_threads)
     }
 
     pub fn from_str(inp: &str) -> Result<Self, Box<dyn Error>> {
+        let mut inp = inp.to_string();
+
+        if inp.contains(".") {
+            inp = Sudoku::from_thonky_str(&inp);
+        }
+
         let split = inp.split(",");
 
         let split_cells = split.collect::<Vec<&str>>();
@@ -759,6 +838,7 @@ impl Sudoku {
         conditonal_run_info: Option<RandomBoardsRequestArgs>,
     ) -> Option<Self> {
         let mut rng = rand::rng();
+        let now = Instant::now();
 
         'outer: loop {
             let mut grid: Board = [[(None, CellState::Normal); 9]; 9];
@@ -815,8 +895,10 @@ impl Sudoku {
                 }
             }
 
+            let diet_grid = Sudoku::get_diet_board(&grid);
+
             if let Some(cri) = conditonal_run_info.clone() {
-                if !cri.completed_set.insert(Sudoku::get_diet_board(&grid)) {
+                if !cri.completed_set.insert(diet_grid) {
                     continue;
                 }
             };
@@ -881,12 +963,19 @@ impl Sudoku {
 
             if board.solve() {
                 board.reset();
+
+                if let Some(cri) = conditonal_run_info.clone() {
+                    cri.tx
+                        .send(DataTxPacket::Valid(board.clone(), now.elapsed()))
+                        .expect("error sending on channel");
+                };
+
                 return Some(board);
             }
 
             if let Some(cri) = conditonal_run_info.clone() {
                 cri.tx
-                    .send((None, Duration::ZERO))
+                    .send(DataTxPacket::Invalid(diet_grid))
                     .expect("error send data on thread");
             };
         }
@@ -922,5 +1011,127 @@ impl Sudoku {
 
     fn get(&self, pos: &Position) -> Option<u8> {
         self.grid[pos.x][pos.y].0
+    }
+
+    #[inline]
+    fn invalid_file_name(number_of_clues: u8, file_number: i32) -> String {
+        format!("clues_{number_of_clues}/invalid_{number_of_clues}_{file_number}")
+    }
+
+    #[inline]
+    fn valid_file_name(number_of_clues: u8) -> String {
+        format!("clues_{number_of_clues}/valid_puzzles_{number_of_clues}")
+    }
+
+    fn read_lines<P, F>(filename: P, process_line: F) -> Result<bool, Box<dyn Error>>
+    where
+        P: AsRef<Path>,
+        F: Fn(DietBoard),
+    {
+        let file = match File::open(filename) {
+            Ok(r) => r,
+            Err(e) => {
+                if e.kind() == ErrorKind::NotFound || e.kind() == ErrorKind::InvalidFilename {
+                    return Ok(false);
+                }
+
+                return Err(e.into());
+            }
+        };
+        let reader = io::BufReader::new(file);
+
+        for line_result in reader.lines() {
+            let line = line_result?;
+            process_line(Sudoku::thonky_to_diet_board(&line)?);
+        }
+
+        Ok(true)
+    }
+
+    fn export_to_file<P>(filename: P, lines: &Vec<DietBoard>) -> Result<bool, Box<dyn Error>>
+    where
+        P: AsRef<Path>,
+    {
+        let mut file = File::create(filename)?;
+
+        for line in lines {
+            file.write_all(Sudoku::diet_board_to_thonky(&line).unwrap().as_bytes())?;
+            file.write_all(b"\n")?;
+        }
+
+        Ok(true)
+    }
+
+    fn append_to_file<P>(filename: P, board: &Sudoku) -> Result<bool, Box<dyn Error>>
+    where
+        P: AsRef<Path>,
+    {
+        let mut file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(filename)?;
+
+        let str_to_append = board.to_thonky_str();
+
+        // Write the data to the end of the file.
+        file.write_all(str_to_append.as_bytes())?;
+        file.write_all(b"\n")?;
+
+        Ok(true)
+    }
+
+    fn thonky_to_diet_board(s: &str) -> Result<DietBoard, String> {
+        if s.len() != 81 {
+            return Err(format!(
+                "Input string must be 81 characters long, but it is {}",
+                s.len()
+            ));
+        }
+
+        let mut vec: Vec<u8> = Vec::with_capacity(81);
+        for c in s.chars() {
+            if c == '.' {
+                vec.push(0);
+            } else if let Some(digit) = c.to_digit(10) {
+                vec.push(digit as u8);
+            } else {
+                return Err(format!("Invalid character found: {}", c));
+            }
+        }
+
+        vec.try_into()
+            .map_err(|v: Vec<u8>| format!("Expected a Vec of length 81, but got {}", v.len()))
+    }
+
+    fn diet_board_to_thonky(board: &DietBoard) -> Result<String, String> {
+        let mut result = String::with_capacity(81);
+
+        for &value in board.iter() {
+            match value {
+                0 => result.push('.'),
+                1..=9 => {
+                    let digit_char = std::char::from_digit(value as u32, 10)
+                        .ok_or_else(|| format!("Invalid digit value: {}", value))?;
+                    result.push(digit_char);
+                }
+                _ => {
+                    return Err(format!("Invalid value in array: {}", value));
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn from_thonky_str(s: &str) -> String {
+        let mut result = String::new();
+        for c in s.chars() {
+            if c == '.' {
+                result.push(',');
+            } else {
+                result.push(c);
+            }
+        }
+        result
     }
 }
