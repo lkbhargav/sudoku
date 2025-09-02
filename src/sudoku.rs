@@ -14,10 +14,9 @@ use std::{
         mpsc::{self, Sender},
     },
     thread,
-    time::{Duration, Instant},
 };
 
-const MAX_NUMBER_OF_RECORDS_IN_A_FILE: usize = 25_000;
+const MAX_NUMBER_OF_RECORDS_IN_A_FILE: usize = 100_000;
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Hash)]
 pub enum CellState {
@@ -110,7 +109,7 @@ struct RandomBoardsRequestArgs {
 }
 
 enum DataTxPacket {
-    Valid(Sudoku, Duration),
+    Valid(Sudoku),
     Invalid(DietBoard),
 }
 
@@ -667,7 +666,7 @@ impl Sudoku {
                         invalid_inps = vec![];
                     }
                 }
-                DataTxPacket::Valid(b, _) => {
+                DataTxPacket::Valid(b) => {
                     Sudoku::append_to_file(Sudoku::valid_file_name(number_of_clues), &b)
                         .expect("error writting a valid puzzle to file");
 
@@ -839,7 +838,6 @@ impl Sudoku {
         conditonal_run_info: Option<RandomBoardsRequestArgs>,
     ) -> Option<Self> {
         let mut rng = rand::rng();
-        let now = Instant::now();
 
         'outer: loop {
             let mut grid: Board = [[(None, CellState::Normal); 9]; 9];
@@ -967,7 +965,7 @@ impl Sudoku {
 
                 if let Some(cri) = conditonal_run_info.clone() {
                     cri.tx
-                        .send(DataTxPacket::Valid(board.clone(), now.elapsed()))
+                        .send(DataTxPacket::Valid(board.clone()))
                         .expect("error sending on channel");
                 };
 
