@@ -569,7 +569,7 @@ impl Sudoku {
 
         // let num_threads = std::cmp::max(1, num_cpus::get().saturating_sub(1));
         // let num_threads = 1;
-        let num_threads = num_cpus::get();
+        let num_threads = num_cpus::get_physical();
 
         let mut file_number = 0;
 
