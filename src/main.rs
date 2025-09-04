@@ -1,4 +1,4 @@
-use sudoko::game::game::Game;
+use sudoku::game::game::Game;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
