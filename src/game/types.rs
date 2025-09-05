@@ -28,6 +28,7 @@ pub enum MessageType {
     Error,
     Warn,
     Normal,
+    Highlight,
 }
 
 #[derive(Debug)]

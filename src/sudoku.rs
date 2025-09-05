@@ -360,7 +360,7 @@ impl Sudoku {
         }
 
         if self.insert(pos, val, cell_state).is_err() {
-            return InsertStatus::ValuePresent;
+            return InsertStatus::Wrong;
         }
 
         resp
@@ -556,14 +556,15 @@ impl Sudoku {
 }
 
 impl Sudoku {
-    pub fn generate_random_board(number_of_clues: u8) -> Option<Self> {
+    pub fn generate_random_board(number_of_clues: u8, callback: fn(usize)) -> Option<Self> {
         let number_of_clues = number_of_clues.clamp(10, 80);
-        Sudoku::random_board(&number_of_clues, None)
+        Sudoku::random_board(&number_of_clues, None, Some(callback))
     }
 
     pub fn generate_random_boards(
         number_of_clues: u8,
         number_of_puzzles: usize,
+        just_print: bool,
     ) -> (Vec<Self>, usize) {
         let number_of_clues = number_of_clues.clamp(10, 80);
 
@@ -582,36 +583,40 @@ impl Sudoku {
 
         let mut invalid_inps = vec![];
 
-        // fetch data from files and feed the dashset with invalid records
-        loop {
-            match Sudoku::read_lines(
-                Sudoku::invalid_file_name(number_of_clues, file_number),
-                |v| {
-                    dashset.insert(v);
-                },
-            ) {
-                Ok(v) => {
-                    if !v {
-                        break;
+        if !just_print {
+            // fetch data from files and feed the dashset with invalid records
+            loop {
+                match Sudoku::read_lines(
+                    Sudoku::invalid_file_name(number_of_clues, file_number),
+                    |v| {
+                        dashset.insert(v);
+                    },
+                ) {
+                    Ok(v) => {
+                        if !v {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("error reading lines: {e}");
+                        return (vec![], 0);
                     }
                 }
-                Err(e) => {
-                    eprintln!("error reading lines: {e}");
-                    return (vec![], 0);
-                }
-            }
 
-            file_number += 1;
+                file_number += 1;
+            }
         }
 
-        // also add all the valid puzzles to the set
-        match Sudoku::read_lines(Sudoku::valid_file_name(number_of_clues), |v| {
-            dashset.insert(v);
-        }) {
-            Ok(_) => (),
-            Err(e) => {
-                eprintln!("error reading lines (valid puzzles): {e}");
-                return (vec![], 0);
+        if !just_print {
+            // also add all the valid puzzles to the set
+            match Sudoku::read_lines(Sudoku::valid_file_name(number_of_clues), |v| {
+                dashset.insert(v);
+            }) {
+                Ok(_) => (),
+                Err(e) => {
+                    eprintln!("error reading lines (valid puzzles): {e}");
+                    return (vec![], 0);
+                }
             }
         }
 
@@ -636,6 +641,7 @@ impl Sudoku {
                             completed_set: dashset_clone.clone(),
                             tx: tx_clone.clone(),
                         }),
+                        None,
                     );
 
                     if found_counter_clone.load(Ordering::Relaxed) >= number_of_puzzles as usize {
@@ -652,23 +658,27 @@ impl Sudoku {
             match m {
                 DataTxPacket::Invalid(v) => {
                     invalid_inps.push(v);
-                    if invalid_inps.len() >= MAX_NUMBER_OF_RECORDS_IN_A_FILE {
-                        match Sudoku::export_to_file(
-                            Sudoku::invalid_file_name(number_of_clues, file_number),
-                            &invalid_inps,
-                        ) {
-                            Ok(_) => file_number += 1,
-                            Err(e) => {
-                                eprintln!("Error dumping to file. Error: {e}");
-                                return (vec![], 0);
-                            }
-                        };
-                        invalid_inps = vec![];
+                    if !just_print {
+                        if invalid_inps.len() >= MAX_NUMBER_OF_RECORDS_IN_A_FILE {
+                            match Sudoku::export_to_file(
+                                Sudoku::invalid_file_name(number_of_clues, file_number),
+                                &invalid_inps,
+                            ) {
+                                Ok(_) => file_number += 1,
+                                Err(e) => {
+                                    eprintln!("Error dumping to file. Error: {e}");
+                                    return (vec![], 0);
+                                }
+                            };
+                            invalid_inps = vec![];
+                        }
                     }
                 }
                 DataTxPacket::Valid(b) => {
-                    Sudoku::append_to_file(Sudoku::valid_file_name(number_of_clues), &b)
-                        .expect("error writting a valid puzzle to file");
+                    if !just_print {
+                        Sudoku::append_to_file(Sudoku::valid_file_name(number_of_clues), &b)
+                            .expect("error writting a valid puzzle to file");
+                    }
 
                     boards.push(b);
 
@@ -688,17 +698,19 @@ impl Sudoku {
             handler.join().expect("error join the thread handler");
         }
 
-        if invalid_inps.len() > 0 {
-            match Sudoku::export_to_file(
-                Sudoku::invalid_file_name(number_of_clues, file_number),
-                &invalid_inps,
-            ) {
-                Ok(_) => (),
-                Err(e) => {
-                    eprintln!("Error dumping to file. Error: {e}");
-                    return (vec![], 0);
-                }
-            };
+        if !just_print {
+            if invalid_inps.len() > 0 {
+                match Sudoku::export_to_file(
+                    Sudoku::invalid_file_name(number_of_clues, file_number),
+                    &invalid_inps,
+                ) {
+                    Ok(_) => (),
+                    Err(e) => {
+                        eprintln!("Error dumping to file. Error: {e}");
+                        return (vec![], 0);
+                    }
+                };
+            }
         }
 
         (boards, num_threads)
@@ -836,8 +848,10 @@ impl Sudoku {
     fn random_board(
         number_of_clues: &u8,
         conditonal_run_info: Option<RandomBoardsRequestArgs>,
+        callback: Option<fn(usize)>,
     ) -> Option<Self> {
         let mut rng = rand::rng();
+        let mut counter = 0;
 
         'outer: loop {
             let mut grid: Board = [[(None, CellState::Normal); 9]; 9];
@@ -972,11 +986,17 @@ impl Sudoku {
                 return Some(board);
             }
 
+            counter += 1;
+
             if let Some(cri) = conditonal_run_info.clone() {
                 cri.tx
                     .send(DataTxPacket::Invalid(diet_grid))
                     .expect("error send data on thread");
             };
+
+            if let Some(cb) = callback {
+                cb(counter);
+            }
         }
     }
 

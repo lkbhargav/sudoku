@@ -1,4 +1,8 @@
-use std::{process::exit, time::Instant};
+use std::{
+    io::{self, Write},
+    process::exit,
+    time::Instant,
+};
 
 use colored::Colorize;
 use humantime::format_duration;
@@ -6,7 +10,7 @@ use humantime::format_duration;
 use crate::{
     game::types::{MainSelection, Message, MessageType, UserRequest},
     sudoku::{CellState, HintStatus, InsertStatus, Position, Sudoku},
-    util::{prompt, prompt_select},
+    util::{confirm, prompt, prompt_select},
 };
 
 #[derive(Default)]
@@ -75,7 +79,10 @@ impl Game {
                     // clears the board completely
                     self.hard_reset();
 
-                    let board = Sudoku::generate_random_board(clues);
+                    let board = Sudoku::generate_random_board(clues, |c| {
+                        print!("\rFiltered: {c}");
+                        io::stdout().flush().unwrap();
+                    });
 
                     self.set_board(board.unwrap());
                     self.game_loop();
@@ -102,9 +109,12 @@ impl Game {
                         }
                     };
 
-                    let boards = Sudoku::generate_random_boards(clues, number_of_boards);
+                    let just_print = confirm("Do you want to just print it here?", true);
 
-                    println!("\nUnqiue and valid boards");
+                    let boards =
+                        Sudoku::generate_random_boards(clues, number_of_boards, just_print);
+
+                    println!("\n\nUnqiue and valid boards");
 
                     for board in &boards.0 {
                         println!("{}", board.to_thonky_str());
@@ -140,12 +150,21 @@ impl Game {
         loop {
             if self.board.as_mut().unwrap().is_board_solved_completely() {
                 if !give_up {
-                    msg = format!(
-                        "{}\nTime taken: {}\n\n{}",
-                        "Congragulations!",
-                        format_duration(start_time.elapsed()),
-                        self.initital_board_layout
-                    );
+                    if self.mistakes > 0 {
+                        msg = format!(
+                            "{}\nTime taken: {}\n\n{}",
+                            "Even though you made some mistake(s) you made it. Congragulations!",
+                            format_duration(start_time.elapsed()),
+                            self.initital_board_layout
+                        );
+                    } else {
+                        msg = format!(
+                            "{}\nTime taken: {}\n\n{}",
+                            "Congragulations!",
+                            format_duration(start_time.elapsed()),
+                            self.initital_board_layout
+                        );
+                    }
 
                     message = Some(Message::new(&msg, MessageType::Success));
                 }
@@ -177,7 +196,10 @@ impl Game {
             match v {
                 UserRequest::Guess(pos, val) => {
                     match self.board.as_mut().unwrap().insert_at(&pos, Some(val)) {
-                        InsertStatus::Wrong => self.mistakes += 1,
+                        InsertStatus::Wrong => {
+                            self.mistakes += 1;
+                            message = Some(Message::new("Value doesn't fit in this cell, please try again".into(), MessageType::Error));
+                        },
                         InsertStatus::ValuePresent =>
                             message = Some(Message::new("Value is already present in the cell/block/row/column, try clearing the cell before inserting a new value or force insert".into(), MessageType::Warn)),
                         _ => (),
@@ -263,9 +285,15 @@ impl Game {
                     self.hard_reset();
                 }
                 UserRequest::Giveup => {
-                    self.board.as_mut().unwrap().reset();
-                    self.board.as_mut().unwrap().solve();
+                    let b = self.board.as_mut().unwrap();
+                    b.reset();
+                    b.solve();
                     give_up = true;
+
+                    message = Some(Message::new(
+                        &self.initital_board_layout,
+                        MessageType::Highlight,
+                    ));
                 }
                 UserRequest::Exit => {
                     break;
@@ -385,6 +413,7 @@ impl Game {
                     MessageType::Warn => m.get_msg().bold().yellow(),
                     MessageType::Success => m.get_msg().bold().green(),
                     MessageType::Normal => m.get_msg().normal(),
+                    MessageType::Highlight => m.get_msg().bold(),
                 };
 
                 println!("{}\n", m);
