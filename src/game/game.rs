@@ -153,7 +153,7 @@ impl Game {
                     if self.mistakes > 0 {
                         msg = format!(
                             "{}\nTime taken: {}\n\n{}",
-                            "Even though you made some mistake(s) you made it. Congragulations!",
+                            "Even though you made some mistake(s), you made it. Congragulations!",
                             format_duration(start_time.elapsed()),
                             self.initital_board_layout
                         );
