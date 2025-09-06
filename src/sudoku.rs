@@ -635,7 +635,7 @@ impl Sudoku {
                     Sudoku::random_board(
                         &number_of_clues,
                         Some(RandomBoardsRequestArgs {
-                            number_of_puzzles: number_of_puzzles,
+                            number_of_puzzles,
                             number_of_found_counter: found_counter_clone.clone(),
                             total_number_of_puzzles_searched: total_seen_counter_clone.clone(),
                             completed_set: dashset_clone.clone(),
