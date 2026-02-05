@@ -950,10 +950,6 @@ impl Sudoku {
                 }
             }
 
-            // println!("{:?}", rows);
-            // println!("{:?}", columns);
-            // println!("{:?}", blocks);
-
             let mut board = Self {
                 grid: grid.clone(),
                 prefilled_positions,
@@ -963,11 +959,6 @@ impl Sudoku {
                 columns,
                 blocks,
             };
-
-            // println!("{board}");
-            // println!("\n{}\n{}\n\n", board.to_thonky_str(), board.to_str());
-
-            // println!("board.is_puzzle_valid(): {}", board.is_puzzle_valid());
 
             if let Some(cri) = conditonal_run_info.clone() {
                 cri.total_number_of_puzzles_searched
@@ -1143,14 +1134,11 @@ impl Sudoku {
     }
 
     fn from_thonky_str(s: &str) -> String {
-        let mut result = String::new();
-        for c in s.chars() {
-            if c == '.' {
-                result.push(',');
-            } else {
-                result.push(c);
-            }
-        }
-        result
+        let s = s
+            .split("")
+            .filter(|v| !v.is_empty())
+            .collect::<Vec<&str>>()
+            .join(",");
+        s.replace(".", "")
     }
 }
