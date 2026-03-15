@@ -147,7 +147,7 @@ impl Display for Sudoku {
                             let mut val = v.to_string().bold();
                             if self.highlighted.is_some() {
                                 if j.1.0.unwrap() == self.highlighted.unwrap() {
-                                    val = v.to_string().on_bright_yellow().green().bold();
+                                    val = v.to_string().yellow().bold();
                                 }
                             }
 
@@ -163,9 +163,9 @@ impl Display for Sudoku {
                             if self.highlighted.is_some() {
                                 if j.1.0.unwrap() == self.highlighted.unwrap() {
                                     if j.1.1 == CellState::Wrong {
-                                        val = val.on_bright_yellow().red().bold();
+                                        val = val.red().bold();
                                     } else {
-                                        val = val.on_bright_yellow().green().bold();
+                                        val = val.yellow().bold();
                                     }
                                 }
                             }
