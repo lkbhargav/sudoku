@@ -1,6 +1,6 @@
 use colored::Colorize;
 use dashmap::DashSet;
-use rand::Rng;
+use rand::RngExt;
 use std::{
     collections::HashMap,
     error::Error,
@@ -717,11 +717,13 @@ impl Sudoku {
     }
 
     pub fn from_str(inp: &str) -> Result<Self, Box<dyn Error>> {
-        let mut inp = inp.to_string();
+        let mut inp = inp.trim().to_string();
 
         if inp.contains(".") {
             inp = Sudoku::from_thonky_str(&inp);
-        }
+        } else if inp.contains("0") {
+	    inp = Sudoku::from_7sudoku_com(&inp);
+	}
 
         let split = inp.split(",");
 
@@ -1140,5 +1142,11 @@ impl Sudoku {
             .collect::<Vec<&str>>()
             .join(",");
         s.replace(".", "")
+    }
+
+    fn from_7sudoku_com(s: &str) -> String {
+	let s = s.split("").filter(|v| !v.is_empty()).collect::<Vec<&str>>().join(",");
+
+	s.replace("0", "")
     }
 }
